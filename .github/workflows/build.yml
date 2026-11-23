@@ -155,9 +155,9 @@ jobs:
           ls -l window-pictures
 
       # What the open window costs in a real window on this Mac (the whole process's CPU, as Activity Monitor counts
-      # it), for this build and for 0.1.0 built from its own commit, measured the same way, one after the other.
+      # it), for this build, for 0.2.0 and for 0.1.0 built from their own commits, measured the same way, one after the other.
       # Never fails the build; the readings are written as annotations, the screenshots go with the window pictures.
-      - name: Window cost in a real window (0.1.0 against this build)
+      - name: Window cost in a real window (0.1.0 and 0.2.0 against this build)
         continue-on-error: true
         timeout-minutes: 40
         run: |
@@ -171,10 +171,18 @@ jobs:
               -DCMAKE_OSX_ARCHITECTURES=arm64 -DTETRAD_JUCE_DIR="$JUCESRC" && cmake --build build-010 --target TetradPreview -j 4 ) > wc-old.log 2>&1 \
             || { tail -n 30 wc-old.log; echo "::warning::WINDOWCOST: 0.1.0 did not build"; }
           OLD="$(find build-010 -type f -name TetradPreview -perm -u+x | head -n 1)"
+          # 0.2.0 (the build tested on 2026-11-23), measured the same way, to compare this build with it.
+          git fetch -q --depth=1 origin e839f67d60f3ce4542ec8176cfd14d94b41271cc && git worktree add -f ../tetrad-020 FETCH_HEAD > /dev/null 2>&1
+          cp plugin/preview/windowcost.cpp ../tetrad-020/plugin/preview/preview.cpp
+          ( cmake -S ../tetrad-020 -B build-020 -DCMAKE_BUILD_TYPE=Release -DTETRAD_BUILD_PREVIEW=ON -DTETRAD_BUILD_TESTS=OFF \
+              -DCMAKE_OSX_ARCHITECTURES=arm64 -DTETRAD_JUCE_DIR="$JUCESRC" && cmake --build build-020 --target TetradPreview -j 4 ) > wc-020.log 2>&1 \
+            || { tail -n 30 wc-020.log; echo "::warning::WINDOWCOST: 0.2.0 did not build"; }
+          MID="$(find build-020 -type f -name TetradPreview -perm -u+x | head -n 1)"
           mkdir -p window-pictures
           : > wc.log
           for round in 1 2 3; do
             [ -n "$OLD" ] && "$OLD" 0.1.0 window-pictures 10 >> wc.log 2>&1
+            [ -n "$MID" ] && "$MID" 0.2.0 window-pictures 10 >> wc.log 2>&1
             "$NEW" this-build window-pictures 10 >> wc.log 2>&1
           done
           cat wc.log
@@ -196,7 +204,7 @@ jobs:
           cp auval.log Tetrad-macOS/auval.log 2>/dev/null || true
           cp pluginval-AU.log pluginval-VST3.log Tetrad-macOS/ 2>/dev/null || true
           cat > Tetrad-macOS/INSTALL.txt <<'TXT'
-          TETRAD 0.2.0: install and set up
+          TETRAD 0.2.1: install and set up
 
           INSTALL (once per Mac)
           1. Unzip.

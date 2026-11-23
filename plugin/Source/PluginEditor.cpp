@@ -179,7 +179,7 @@ LightsLayer::LightsLayer (TetradProcessor& p) : proc (p)
 {
     auto set = [this] (int kind, float core, std::initializer_list<float> halos, std::initializer_list<float> alphas)
     {
-        auto& sp = sprites[(size_t) kind];
+        auto& sp = films[(size_t) kind];
         sp.core = core;
         int k = 0; for (float h : halos) sp.halos[k++] = h;
         k = 0; for (float a : alphas) sp.alphas[k++] = a;
@@ -213,7 +213,7 @@ void LightsLayer::attach (juce::Component& parent, std::array<std::array<OutputS
     });
     for (int ch = 0; ch < 4; ++ch)
     {
-        add (channelLights[(size_t) ch], lightArea (ch), [this, ch] (juce::Graphics& g) { paintChannelLight (g, ch); });
+        add (channelLights[(size_t) ch], lightSpotArea (ch), [this, ch] (juce::Graphics& g) { paintChannelLight (g, ch); });
         add (readouts[(size_t) ch], readoutArea (ch), [this, ch] (juce::Graphics& g)
         {
             g.fillAll (cardFill);
@@ -243,13 +243,16 @@ void LightsLayer::setWaves (bool shouldShowWaves)
 {
     if (waves == shouldShowWaves) return;
     waves = shouldShowWaves;
+    for (int ch = 0; ch < 4; ++ch)
+        if (channelLights[(size_t) ch] != nullptr)
+            channelLights[(size_t) ch]->setBounds (waves ? lightArea (ch) : lightSpotArea (ch));
     if (modeLight != nullptr) updateRow (0, true);
 }
 
 void LightsLayer::paintChannelLight (juce::Graphics& g, int ch)
 {
     g.fillAll (cardFill);
-    const auto area = lightArea (ch);
+    const auto area = channelLights[(size_t) ch]->getBounds();
     if (waves)
     {
         const auto box = area.withZeroOrigin().toFloat().reduced (4.0f, 2.0f);
@@ -272,7 +275,7 @@ void LightsLayer::paintChannelLight (juce::Graphics& g, int ch)
         }
     }
     else
-        drawSprite (g, bigLight, (float) (colCentre (ch) - area.getX()), (float) (kLightY - area.getY()), drawnLight[(size_t) ch] / 64.0);
+        drawFilm (g, bigLight, (float) (colCentre (ch) - area.getX()), (float) (kLightY - area.getY()), drawnLight[(size_t) ch]);
 }
 
 // The three output lights: brightness follows the value; a switched-off output shows an empty ring.
@@ -280,58 +283,78 @@ void LightsLayer::paintOutput (juce::Graphics& g, int ch, int which)
 {
     g.fillAll (cardFill);
     const int code = drawnOut[(size_t) ch][(size_t) which];
-    if (code >= 0)
-        drawSprite (g, outLight, 14.0f, 14.0f, code / 64.0);
-    else
+    drawFilm (g, outLight, 14.0f, 14.0f, code >= 0 ? code : kOffFrame);
+}
+
+// One finished picture of a light (its whole patch of card colour with the light on it), at the window's pixel size.
+// Put together exactly as 0.2.0 drew a light each frame: the glow at the light's brightness, the dark disc, the amber
+// disc at its brightness curve, so the look is unchanged; it is just done once instead of every frame.
+juce::Image LightsLayer::makeFrame (Film& film, int frame, float scale, float reach)
+{
+    const int px = juce::jmax (4, (int) std::ceil (2.0f * reach * scale));
+    if (film.glow.isNull())
     {
-        g.setColour (line);
+        auto make = [&] (const std::function<void (juce::Graphics&)>& paintIt)
+        {
+            juce::Image part (juce::Image::ARGB, px, px, true);
+            juce::Graphics sg (part);
+            sg.addTransform (juce::AffineTransform::scale (scale));
+            paintIt (sg);
+            return part;
+        };
+        film.glow = make ([&] (juce::Graphics& sg)
+        {
+            for (int k = 0; k < 3; ++k)
+                if (film.halos[k] > 0.0f)
+                {
+                    sg.setColour (amber.withAlpha (film.alphas[k]));
+                    sg.fillEllipse (reach - film.halos[k], reach - film.halos[k], 2.0f * film.halos[k], 2.0f * film.halos[k]);
+                }
+        });
+        film.base = make ([&] (juce::Graphics& sg) { sg.setColour (knobFill); sg.fillEllipse (reach - film.core, reach - film.core, 2.0f * film.core, 2.0f * film.core); });
+        film.lit  = make ([&] (juce::Graphics& sg) { sg.setColour (amber);    sg.fillEllipse (reach - film.core, reach - film.core, 2.0f * film.core, 2.0f * film.core); });
+    }
+
+    juce::Image img (juce::Image::RGB, px, px, false);
+    juce::Graphics sg (img);
+    sg.fillAll (cardFill);
+    if (frame == kOffFrame)
+    {
+        sg.addTransform (juce::AffineTransform::scale (scale));
+        sg.setColour (line);
         juce::Path ring;
-        ring.addEllipse (8.0f, 8.0f, 12.0f, 12.0f);
+        ring.addEllipse (reach - 6.0f, reach - 6.0f, 12.0f, 12.0f);
         juce::Path dashed;
         const float dashes[2] = { 2.0f, 2.0f };
         juce::PathStrokeType (1.2f).createDashedStroke (dashed, ring, dashes, 2);
-        g.fillPath (dashed);
+        sg.fillPath (dashed);
+        return img;
     }
+    const float lv = (float) frame / 64.0f;
+    if (lv > 0.0f) { sg.setOpacity (lv); sg.drawImageAt (film.glow, 0, 0); }
+    sg.setOpacity (1.0f);
+    sg.drawImageAt (film.base, 0, 0);
+    sg.setOpacity (lightAlpha (lv));
+    sg.drawImageAt (film.lit, 0, 0);
+    return img;
 }
 
-void LightsLayer::drawSprite (juce::Graphics& g, int kind, float cx, float cy, double level)
+void LightsLayer::drawFilm (juce::Graphics& g, int kind, float cx, float cy, int frame)
 {
-    auto& sp = sprites[(size_t) kind];
+    auto& film = films[(size_t) kind];
     const float scale = juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
-    const float reach = juce::jmax (sp.halos[0], sp.core) + 1.0f;                // the picture's half width, panel units
-    if (std::fabs (scale - sp.scale) > 0.001f || sp.glow.isNull())
+    if (std::fabs (scale - film.scale) > 0.001f)
     {
-        // Drawn once per window size: the same circles drawLight () makes, at full brightness.
-        sp.scale = scale;
-        const int px = juce::jmax (4, (int) std::ceil (2.0f * reach * scale));
-        auto make = [&] (const std::function<void (juce::Graphics&)>& paintIt)
-        {
-            juce::Image img (juce::Image::ARGB, px, px, true);
-            juce::Graphics sg (img);
-            sg.addTransform (juce::AffineTransform::scale (scale));
-            paintIt (sg);
-            return img;
-        };
-        sp.glow = make ([&] (juce::Graphics& sg)
-        {
-            for (int k = 0; k < 3; ++k)
-                if (sp.halos[k] > 0.0f)
-                {
-                    sg.setColour (amber.withAlpha (sp.alphas[k]));
-                    sg.fillEllipse (reach - sp.halos[k], reach - sp.halos[k], 2.0f * sp.halos[k], 2.0f * sp.halos[k]);
-                }
-        });
-        sp.base = make ([&] (juce::Graphics& sg) { sg.setColour (knobFill); sg.fillEllipse (reach - sp.core, reach - sp.core, 2.0f * sp.core, 2.0f * sp.core); });
-        sp.lit  = make ([&] (juce::Graphics& sg) { sg.setColour (amber);    sg.fillEllipse (reach - sp.core, reach - sp.core, 2.0f * sp.core, 2.0f * sp.core); });
+        film.scale = scale;
+        film.glow = film.base = film.lit = juce::Image();
+        for (auto& f : film.frames) f = juce::Image();
     }
-    const auto place = juce::AffineTransform::scale (1.0f / scale).translated (cx - reach, cy - reach);
-    const float lv = (float) juce::jlimit (0.0, 1.0, level);
-    if (lv > 0.0f) { g.setOpacity (lv); g.drawImageTransformed (sp.glow, place); }
+    const float reach = juce::jmax (film.halos[0], film.core) + 1.0f;            // the picture's half width, panel units
+    const int which = juce::jlimit (0, kOffFrame, frame);
+    auto& img = film.frames[(size_t) which];
+    if (img.isNull()) img = makeFrame (film, which, scale, reach);
     g.setOpacity (1.0f);
-    g.drawImageTransformed (sp.base, place);
-    g.setOpacity (lightAlpha (lv));
-    g.drawImageTransformed (sp.lit, place);
-    g.setOpacity (1.0f);
+    g.drawImageTransformed (img, juce::AffineTransform::scale (1.0f / scale).translated (cx - reach, cy - reach));
 }
 
 juce::String LightsLayer::readout (int ch, juce::String& under) const

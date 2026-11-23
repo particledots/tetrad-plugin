@@ -18,6 +18,15 @@
 // window costs there even with nothing moving. Tried and measured, and not used because they cost more or saved
 // nothing: the two rows of lights on alternate screen refreshes, JUCE's Metal drawing route, drawing without a layer,
 // keeping the controls as pictures, 20 frames a second.
+//
+// Plainer still (0.2.1; on the Intel Mac 0.2.0's open window still added about 13 points, no better than 0.1.0):
+//   - each light is now a flat set of finished pictures, one per brightness step (the card colour already in them, made
+//     the first time a step is needed, again if the window size changes): drawing a light is one plain copy, with no
+//     brightness blending and no circles worked out on the way;
+//   - every light patch is opaque, so the panel picture under it is no longer copied first;
+//   - in the Lights view a big light's patch is only as wide as its glow (54 instead of 100), so about half as much is
+//     redrawn each frame; the Waves view still uses the full width.
+// Everything else (what is shown, the 30 frames a second, the 64 brightness steps) is as in 0.2.0.
 
 #pragma once
 
@@ -126,7 +135,7 @@ public:
 class LightSpot : public juce::Component
 {
 public:
-    explicit LightSpot (std::function<void (juce::Graphics&)> p) : painter (std::move (p)) { setInterceptsMouseClicks (false, false); }
+    explicit LightSpot (std::function<void (juce::Graphics&)> p) : painter (std::move (p)) { setInterceptsMouseClicks (false, false); setOpaque (true); }
     void paint (juce::Graphics& g) override { painter (g); }
 private:
     std::function<void (juce::Graphics&)> painter;
@@ -136,7 +145,7 @@ private:
 class OutputSwitch : public juce::Button
 {
 public:
-    OutputSwitch() : juce::Button ("output") { setClickingTogglesState (true); }
+    OutputSwitch() : juce::Button ("output") { setClickingTogglesState (true); setOpaque (true); }
     void paintButton (juce::Graphics& g, bool, bool) override { if (painter) painter (g); }
     std::function<void (juce::Graphics&)> painter;
 };
@@ -164,8 +173,10 @@ public:
     void setWaves (bool shouldShowWaves);
     bool isWaves() const { return waves; }
 
-    // The big light's patch stops just above the slider (y 146).
+    // The big light's patch stops just above the slider (y 146). The Waves view uses the full width (lightArea); the
+    // Lights view only the width of the glow (lightSpotArea), centred on the light.
     static juce::Rectangle<int> lightArea (int ch)   { return { TetradStyle::kColX[ch] + 2, 93, TetradStyle::kColW - 4, 53 }; }
+    static juce::Rectangle<int> lightSpotArea (int ch) { return { TetradStyle::colCentre (ch) - 27, 93, 54, 53 }; }
     static juce::Rectangle<int> readoutArea (int ch) { return { TetradStyle::kColX[ch] + 2, 298, TetradStyle::kColW - 4, 32 }; }
     static juce::Rectangle<int> outArea (int ch, int which) { return { TetradStyle::outX (ch, which) - 14, TetradStyle::kOutY - 14, 28, 28 }; }
     static juce::Rectangle<int> modeLightArea()      { return { 114, 58, 28, 24 }; }
@@ -176,16 +187,22 @@ public:
     juce::RectangleList<int> lastFrameAreas; // for the offline checks: what the last frame asked to redraw
 
 private:
-    // A kind of light drawn once into pictures at the window's real pixel size: its glow (amber circles) and its core
-    // (the dark disc and the amber disc on it); each frame copies them at the light's brightness.
-    struct Sprite
+    // A kind of light as a flat set of finished pictures: one picture of the whole light for each of its 65 brightness
+    // steps (0 to 64, the card colour already in it), and for the output lights one more, the empty ring of a switched
+    // off output. A picture is made the first time its step is needed, at the window's real pixel size, and all are
+    // dropped if that size changes. Drawing a light is then a single copy.
+    struct Film
     {
         float core = 6.0f; float halos[3] {}; float alphas[3] {};
-        float scale = 0.0f; juce::Image glow, base, lit;
+        float scale = 0.0f;
+        juce::Image glow, base, lit;                 // the parts a picture is put together from (as in 0.2.0)
+        std::array<juce::Image, 66> frames;
     };
-    enum { bigLight = 0, outLight, numSprites };
-    std::array<Sprite, numSprites> sprites;
-    void drawSprite (juce::Graphics& g, int kind, float cx, float cy, double level);
+    static constexpr int kOffFrame = 65;
+    enum { bigLight = 0, outLight, numFilms };
+    std::array<Film, numFilms> films;
+    void drawFilm (juce::Graphics& g, int kind, float cx, float cy, int frame);
+    static juce::Image makeFrame (Film& film, int frame, float scale, float reach);
 
     void timerCallback() override;
     juce::String readout (int ch, juce::String& under) const;
