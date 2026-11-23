@@ -6,8 +6,17 @@ out as smooth MIDI CC. Inspired by the XAOC Devices Batumi II quad LFO and its P
 called Tetrad Ex). All code is our own, written from the manual's description of the controls; it is not a port or
 copy of anything, contains no XAOC code or artwork, and is not affiliated with XAOC Devices.
 
-Status: **version 0.1.0 (milestone 1: the four channels, every mode and output, the mapper) built and checked; not yet
-tested in Logic.** Tetrad Ex is drawn dimmed on the panel and arrives in milestone 2.
+Status: **version 0.1.0 (milestone 1: the four channels, every mode and output, the mapper) tested in Logic on
+2026-11-22 and working on both test Macs: the M4 Mac mini (macOS Tahoe, Logic Pro 11.2.2) and the Intel Mac (macOS
+12.7.8, Logic Pro 10.7.8).** Tetrad Ex is drawn dimmed on the panel and arrives in milestone 2.
+
+Tested on both Macs: installing, the window and its lights, resizing, the mapper moving a synth's cutoff smoothly,
+phase and multiply mode, mod from, reset from Notes, following Logic's tempo in time with the click, switching an
+output off and on, save and reopen, and sharing a track with Ogdoad (Ogdoad, Tetrad, Ogdoad Mapper, Tetrad Mapper).
+CPU on the Intel Mac (Activity Monitor, Logic's % CPU, transport running, a few notes playing): Tetrad alone 18-21%
+with its window closed, 29-33% open, 28-32% open with the mapper bypassed; with Ogdoad on the same track 23-25%
+closed, 32-40% open, 39% open with the Tetrad Mapper bypassed. Bypassing the mapper made almost no difference, so the
+mapper's work is small; the open window is the larger share.
 
 ## The panel
 
