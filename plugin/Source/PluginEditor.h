@@ -150,8 +150,7 @@ public:
 // compare them on the build Mac.
 struct LightsDrawSettings
 {
-    double framesPerSecond = 30.0;
-    bool rowsTakeTurns = false;              // the two rows on alternate screen refreshes, instead of together
+    double framesPerSecond = 30.0;           // 0: the lights stand still (cost check only)
     bool cacheControls = false;              // every control kept as a picture (setBufferedToImage)
 };
 
@@ -192,7 +191,6 @@ private:
     void drawSprite (juce::Graphics& g, int kind, float cx, float cy, double level);
 
     void timerCallback() override;
-    void onVBlank();
     juce::String readout (int ch, juce::String& under) const;
     void paintChannelLight (juce::Graphics&, int ch);
     void paintOutput (juce::Graphics&, int ch, int which);
@@ -203,9 +201,6 @@ private:
     std::array<std::unique_ptr<LightSpot>, 4> channelLights, readouts;
     std::unique_ptr<LightSpot> modeLight, tempoNote;
     std::array<std::array<OutputSwitch*, 3>, 4> outs {};
-    std::unique_ptr<juce::VBlankAttachment> vblank;
-    int nextRow = 0;
-    double lastRowAt = 0.0, lastVBlankAt = -1.0e9;
 
     // What each patch shows (what it was last asked to draw).
     std::array<int, 4> drawnLight {};

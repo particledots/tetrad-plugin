@@ -82,41 +82,42 @@ int main (int argc, char** argv)
     const double closed = measure (seconds);
     std::cout << "windowcost " << label << ": window closed " << juce::String (closed, 1) << "% of a core" << std::endl;
 
-    auto openWindow = [&] (const juce::String& name, int width, bool shot)
+    // As in Logic: the plugin's window is a view inside the host's window (here a plain window of our own), set up
+    // either layer-backed (JUCE's usual way) or drawn directly (windowRequiresSynchronousCoreGraphicsRendering).
+    auto openWindow = [&] (const juce::String& name, bool direct, bool shot)
     {
+        juce::Component host;
+        host.setSize (960, 600);
+        host.setTopLeftPosition (20, 40);
+        host.addToDesktop (juce::ComponentPeer::windowHasTitleBar);
+        host.setVisible (true);
         std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
-        ed->setTopLeftPosition (40, 60);
-       #if JUCE_MAC
-        ed->addToDesktop (juce::ComponentPeer::windowHasTitleBar);
-       #else
-        ed->addToDesktop (0);
-       #endif
-        ed->setSize (width, juce::roundToInt (width * 560.0 / 920.0));
+        ed->setTopLeftPosition (0, 0);
+        ed->addToDesktop (direct ? juce::ComponentPeer::windowRequiresSynchronousCoreGraphicsRendering : 0, host.getWindowHandle());
         ed->setVisible (true);
-        ed->toFront (true);
+        host.toFront (true);
         measure (2.0);
         const double open = measure (seconds);
         if (shot) screenshot (shots, "real-window-" + label + "-" + name + ".png");
         ed->removeFromDesktop();
+        ed.reset();
+        host.removeFromDesktop();
         std::cout << "windowcost " << label << " " << name << ": open " << juce::String (open, 1) << "% (+" << juce::String (open - closed, 1) << ")" << std::endl;
     };
 
    #ifdef TETRAD_WINDOWCOST_VARIANTS
-    // This build: the same window drawn in different ways, twice round, to compare.
-    struct Variant { const char* name; double fps; bool turns, cache; };
-    const Variant variants[] = { { "still", 0.0, false, false }, { "5fps", 5.0, false, false }, { "15fps", 15.0, false, false },
-                                 { "30fps", 30.0, false, false }, { "30fps-rows-take-turns", 30.0, true, false },
-                                 { "30fps-cached-controls", 30.0, false, true } };
-    for (int round = 0; round < 1; ++round)
-        for (auto& v : variants)
-        {
-            LightsLayer::drawSettings = { v.fps, v.turns, v.cache };
-            openWindow (v.name, 920, round == 0);
-        }
+    struct Variant { const char* name; bool direct; double fps; };
+    const Variant variants[] = { { "layer-30fps", false, 30.0 }, { "direct-30fps", true, 30.0 }, { "layer-20fps", false, 20.0 },
+                                 { "direct-20fps", true, 20.0 }, { "layer-still", false, 0.0 }, { "direct-still", true, 0.0 } };
+    for (auto& v : variants)
+    {
+        LightsLayer::drawSettings.framesPerSecond = v.fps;
+        openWindow (v.name, v.direct, v.fps == 30.0);
+    }
     LightsLayer::drawSettings = {};
    #else
-    openWindow ("100", 920, true);
-    openWindow ("150", 1380, true);
+    openWindow ("layer-30fps", false, true);
+    openWindow ("direct-30fps", true, true);
    #endif
     audio.stopThread (2000);
 

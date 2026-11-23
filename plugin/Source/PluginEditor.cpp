@@ -230,26 +230,13 @@ void LightsLayer::attach (juce::Component& parent, std::array<std::array<OutputS
         }
     }
     update();
-    vblank = std::make_unique<juce::VBlankAttachment> (&parent, [this] { onVBlank(); });
-    startTimerHz (30);                                   // only does anything if the screen refreshes stop arriving
-}
-
-void LightsLayer::onVBlank()
-{
-    const double now = juce::Time::getMillisecondCounterHiRes();
-    lastVBlankAt = now;
-    if (drawSettings.framesPerSecond <= 0.0) return;     // (cost check only: the lights stand still)
-    const double gap = 1000.0 / juce::jmax (1.0, drawSettings.framesPerSecond) / (drawSettings.rowsTakeTurns ? 2.0 : 1.0);
-    if (now - lastRowAt < gap - 2.0) return;
-    lastRowAt = now;
-    if (drawSettings.rowsTakeTurns) { updateRow (nextRow, false); nextRow ^= 1; }
-    else update();
+    if (drawSettings.framesPerSecond > 0.0)
+        startTimerHz (juce::roundToInt (drawSettings.framesPerSecond));
 }
 
 void LightsLayer::timerCallback()
 {
-    if (juce::Time::getMillisecondCounterHiRes() - lastVBlankAt > 100.0)
-        update();
+    update();
 }
 
 void LightsLayer::setWaves (bool shouldShowWaves)
