@@ -1,0 +1,42 @@
+cmake_minimum_required(VERSION 3.22)
+
+# macOS build settings. These must be set before project().
+# Universal binary (Apple Silicon + Intel) so the same build runs on the M4 Mac mini
+# and on the Intel Mac. Deployment target 11.0 = macOS Big Sur or newer.
+if(APPLE)
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build for Apple Silicon and Intel")
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
+endif()
+
+project(Tetrad VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+option(TETRAD_BUILD_PLUGIN "Build the AU/VST3 plugin (needs JUCE)" ON)
+option(TETRAD_BUILD_TESTS  "Build the engine self-tests" ON)
+
+if(TETRAD_BUILD_TESTS)
+    enable_testing()
+endif()
+
+# 1) The engine: plain C++, no plugin framework (the four channels, their modes and the smooth CC stream).
+add_subdirectory(engine)
+
+# 2) The plugin wrapper and the panel (JUCE).
+if(TETRAD_BUILD_PLUGIN)
+    include(FetchContent)
+    if(DEFINED TETRAD_JUCE_DIR)
+        add_subdirectory(${TETRAD_JUCE_DIR} juce EXCLUDE_FROM_ALL)
+    else()
+        FetchContent_Declare(
+            JUCE
+            GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
+            GIT_TAG        8.0.17-security
+            GIT_SHALLOW    TRUE
+        )
+        FetchContent_MakeAvailable(JUCE)
+    endif()
+    add_subdirectory(plugin)
+endif()

@@ -1,0 +1,256 @@
+name: Build Tetrad
+
+# Runs automatically every time code is pushed, and can also be started by hand
+# from the Actions tab ("Run workflow").
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  engine-test:
+    name: Engine self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run the engine test
+        run: |
+          set +e
+          ( cmake -S . -B build-test -DTETRAD_BUILD_PLUGIN=OFF -DCMAKE_BUILD_TYPE=Release \
+            && cmake --build build-test -j 4 \
+            && ctest --test-dir build-test --output-on-failure -V ) > engine-test.log 2>&1
+          code=$?
+          tail -n 40 engine-test.log
+          # Result is also written as annotations (shown on the run page and readable through the API).
+          if [ $code -ne 0 ]; then
+            echo "::error::ENGINE-TEST: failed (exit code $code)"
+            grep -E "error|FAIL|engine tests:|mapper tests:" engine-test.log | head -15 | while IFS= read -r line; do echo "::error::ENGINE-TEST: $line"; done
+            exit 1
+          fi
+          echo "::notice::ENGINE-TEST: $(grep -h 'engine tests:' engine-test.log | head -n 1)"
+          echo "::notice::CPU: $(grep -ho 'CPU: .*' engine-test.log | head -n 1)"
+          echo "::notice::MIDI: $(grep -ho 'MIDI: .*' engine-test.log | head -n 1)"
+          echo "::notice::MAPPER-TEST: $(grep -h 'mapper tests:' engine-test.log | head -n 1)"
+          echo "::notice::MAPPER-SPEED: $(grep -h 'microseconds per CC' engine-test.log | head -n 1)"
+          grep -q "mapper tests: .* checks passed" engine-test.log || { echo "::error::MAPPER-TEST: no pass line found"; exit 1; }
+
+  build-macos:
+    name: Build AU + VST3 (macOS)
+    runs-on: macos-26     # Apple silicon runner; macos-14 is retired by GitHub on 2 Nov 2026
+    permissions:
+      contents: write     # only to put the finished package into a private draft release (last step)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: |
+          set +e
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTETRAD_BUILD_PREVIEW=ON > configure.log 2>&1; code=$?
+          tail -n 20 configure.log
+          if [ $code -ne 0 ]; then
+            echo "::error::CONFIGURE: failed (exit code $code)"
+            grep -iE "error" configure.log | head -10 | while IFS= read -r line; do echo "::error::CONFIGURE: $line"; done
+            exit 1
+          fi
+
+      - name: Build AU and VST3
+        run: |
+          set +e
+          cmake --build build --config Release --target Tetrad_AU Tetrad_VST3 -j 4 > build.log 2>&1; code=$?
+          tail -n 30 build.log
+          if [ $code -ne 0 ]; then
+            echo "::error::BUILD: failed (exit code $code)"
+            grep -E "error:|Error " build.log | head -15 | while IFS= read -r line; do echo "::error::BUILD: $line"; done
+            exit 1
+          fi
+          echo "::notice::BUILD: AU and VST3 compiled"
+
+      - name: Locate the built plugins
+        id: find
+        run: |
+          AU=$(find build -type d -name "Tetrad.component" | head -n 1)
+          VST3=$(find build -type d -name "Tetrad.vst3" | head -n 1)
+          echo "AU:   $AU"
+          echo "VST3: $VST3"
+          test -n "$AU"   || { echo "AU bundle not found";   exit 1; }
+          test -n "$VST3" || { echo "VST3 bundle not found"; exit 1; }
+          echo "au=$AU"     >> "$GITHUB_OUTPUT"
+          echo "vst3=$VST3" >> "$GITHUB_OUTPUT"
+
+      - name: Check the build is universal (Apple Silicon + Intel)
+        run: |
+          lipo -archs "${{ steps.find.outputs.au }}/Contents/MacOS/Tetrad"
+          lipo -archs "${{ steps.find.outputs.vst3 }}/Contents/MacOS/Tetrad"
+
+      - name: Sign (ad-hoc, so Apple Silicon Macs will load it)
+        run: |
+          codesign --force --deep --sign - "${{ steps.find.outputs.au }}"
+          codesign --force --deep --sign - "${{ steps.find.outputs.vst3 }}"
+          codesign --verify --deep --strict --verbose=2 "${{ steps.find.outputs.au }}"
+          codesign --verify --deep --strict --verbose=2 "${{ steps.find.outputs.vst3 }}"
+
+      - name: Apple's AU validator (auval)
+        continue-on-error: true
+        run: |
+          mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
+          cp -R "${{ steps.find.outputs.au }}" "$HOME/Library/Audio/Plug-Ins/Components/"
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          sleep 3
+          auval -v aumi Ttrd Pdot > auval.log 2>&1; code=$?
+          tail -n 20 auval.log
+          # Result is also written as annotations (shown on the run page and readable through the API).
+          if grep -q "AU VALIDATION SUCCEEDED" auval.log; then
+            echo "::notice::AUVAL: AU VALIDATION SUCCEEDED"
+          else
+            echo "::error::AUVAL: did not succeed (auval exit code $code)"
+            grep -iE "fail|error|cannot|not found" auval.log | head -8 | while IFS= read -r line; do echo "::error::AUVAL: $line"; done
+            exit 1
+          fi
+
+      # pluginval (Tracktion's open-source plugin validator) checks the AU and the VST3 the way hosts use them: loading,
+      # parameters, saving and restoring state, different buffer sizes and sample rates. It never fails the build;
+      # its verdict is written as annotations and as logs inside the package.
+      - name: pluginval (AU and VST3)
+        continue-on-error: true
+        timeout-minutes: 20
+        run: |
+          set +e
+          curl -sSL -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_macOS.zip
+          unzip -q -o pluginval.zip -d pluginval-bin
+          PV="$(find pluginval-bin -type f -name pluginval -perm -u+x | head -n 1)"
+          echo "pluginval binary: $PV"
+          test -n "$PV" || { echo "::warning::PLUGINVAL: could not download pluginval"; exit 0; }
+          "$PV" --version 2>&1 | head -n 1 | while IFS= read -r line; do echo "::notice::PLUGINVAL version: $line"; done
+          for kind in AU VST3; do
+            if [ "$kind" = "AU" ]; then TARGET="$HOME/Library/Audio/Plug-Ins/Components/Tetrad.component"; else TARGET="${{ steps.find.outputs.vst3 }}"; fi
+            "$PV" --strictness-level 5 "$TARGET" > "pluginval-$kind.log" 2>&1; code=$?
+            tail -n 25 "pluginval-$kind.log"
+            if [ $code -eq 0 ]; then
+              echo "::notice::PLUGINVAL $kind: passed at strictness level 5"
+            else
+              echo "::error::PLUGINVAL $kind: failed (exit code $code)"
+              grep -iE "fail|error|crash|assert" "pluginval-$kind.log" | head -12 | while IFS= read -r line; do echo "::error::PLUGINVAL $kind: $line"; done
+            fi
+          done
+          exit 0
+
+      # Draws the real window to picture files and runs the plugin checks (controls, saving, MIDI in and out).
+      # Never fails the build; the result is written as annotations and the pictures are uploaded separately.
+      - name: Window picture and plugin checks
+        continue-on-error: true
+        run: |
+          set +e
+          cmake --build build --config Release --target TetradPreview -j 4 > preview-build.log 2>&1 || { tail -n 30 preview-build.log; echo "::warning::PREVIEW: did not build"; exit 0; }
+          PV="$(find build -type f -name TetradPreview -perm -u+x | head -n 1)"
+          "$PV" window-pictures > preview.log 2>&1; code=$?
+          cat preview.log
+          echo "::notice::WINDOW: $(grep -h '^window:' preview.log)"
+          if [ $code -eq 0 ]; then echo "::notice::PREVIEW: $(grep -h 'preview checks:' preview.log)"; else
+            echo "::error::PREVIEW: $(grep -h 'preview checks:' preview.log)"
+            grep FAIL preview.log | head -10 | while IFS= read -r line; do echo "::error::PREVIEW: $line"; done
+          fi
+          ls -l window-pictures
+
+      - name: Upload the window pictures
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tetrad-window-pictures
+          path: window-pictures/*.png
+          if-no-files-found: warn
+
+      - name: Package
+        run: |
+          mkdir -p Tetrad-macOS
+          cp -R "${{ steps.find.outputs.au }}"   Tetrad-macOS/
+          cp -R "${{ steps.find.outputs.vst3 }}" Tetrad-macOS/
+          cp auval.log Tetrad-macOS/auval.log 2>/dev/null || true
+          cp pluginval-AU.log pluginval-VST3.log Tetrad-macOS/ 2>/dev/null || true
+          cat > Tetrad-macOS/INSTALL.txt <<'TXT'
+          TETRAD 0.1.0: install and set up
+
+          INSTALL (once per Mac)
+          1. Unzip.
+          2. Open Terminal and run:   xattr -dr com.apple.quarantine ~/Downloads/Tetrad-macOS/*
+             (adjust the path if you unzipped elsewhere; this clears the "downloaded from internet" block)
+          3. Double-click Install-Unofficial-Plugin.command in this folder. It asks for your Mac password once and
+             installs the Audio Unit (Tetrad.component) for all users. It does not install the VST3.
+          4. Open Logic. If Tetrad is missing: Settings > Plug-in Manager, select Tetrad, Reset & Rescan Selection.
+
+          THE MAPPER (once per Mac)
+          Logic has no CV, so Tetrad sends its outputs as MIDI CC, and a Scripter script turns them into knob moves.
+          5. Make a Software Instrument track. MIDI FX slot 1: Audio Units > particledots > Tetrad.
+             MIDI FX slot 2: Scripter.
+          6. In Scripter, click "Open Script in Editor". Select everything in the editor and delete it.
+          7. Open "Tetrad Mapper (paste into Scripter).txt" from this folder, select all, copy, paste it into the
+             Script Editor, click "Run Script", and close the editor.
+          8. In Scripter's preset menu (top of its window) choose "Save As..." and call it Tetrad Mapper.
+             From now on "Tetrad Mapper" is in Scripter's preset menu on this Mac.
+
+          EACH TRACK
+          9.  MIDI FX slot: Tetrad. The slot below it: Scripter with the Tetrad Mapper preset.
+          10. In Scripter: set "Lane 1 source" to an output (A, B, C or D: sine, asgn or rect).
+              Open "Lane 1 target", choose "Learn plug-in parameter", then move once the knob you want to
+              modulate (on the instrument, or on an audio effect on this track).
+          11. "Lane 1 min %" and "Lane 1 max %" set how far that knob sweeps (max below min turns it upside down).
+              A rect source jumps the knob between min (low) and max (high).
+          Up to 8 lanes per Scripter; for more, add a second Scripter with the same preset below the first.
+          Tetrad's CC (channel 12: CC 2, 4, 5, 8, 34, 36, 37, 40, 66-73, 91-94) stops at the mapper; your notes,
+          Tetrad's rect notes and everything else pass through.
+
+          SHARING A TRACK WITH YOUR OTHER PLUGINS
+          Tetrad's numbers are used by none of Ogdoad, Strange Drift, Hillside, Bryn or particlehold, and each mapper
+          only takes its own plugin's CC. Order the MIDI FX slots: the plugins first, then their mappers.
+          With Ogdoad: Ogdoad, Tetrad, Ogdoad Mapper, Tetrad Mapper (Ogdoad's mapper first is lighter on the CPU).
+          Rect notes (49-52) reach any plugin below Tetrad: put Hillside, Bryn or particlehold above Tetrad unless you
+          want Tetrad's rect notes to play them.
+
+          GOOD TO KNOW
+          - Mode: free (four separate LFOs), phase (B, C, D follow A, delayed by their sliders), divide and multiply
+            (B, C, D at A's speed divided or multiplied by 1, 2, 3, 4, 5, 8, 16, 32). Entering a mode starts all four
+            together.
+          - Tempo: Hz, or Logic (the sliders pick note lengths; locked to the song while Logic plays).
+          - Mod from / depth and reset from: the plugin's patch cables between the four channels.
+          - Click an output's light to switch that output off (it stops sending; less MIDI, less CPU).
+          - Rect out: CC (127 / 0), Note (a 20 ms note at each rising edge: A 49, B 50, C 51, D 52), or Both.
+          - The top rate is 20 Hz (what MIDI CC carries smoothly).
+          TXT
+          # Easy installer for Logic (double-click; same file in every plugin)
+          cp "tools/mapper/Tetrad-Mapper.js" "Tetrad-macOS/Tetrad Mapper (paste into Scripter).txt"
+          cp tools/install/Install-Unofficial-Plugin.command Tetrad-macOS/
+          chmod +x Tetrad-macOS/Install-Unofficial-Plugin.command
+          [ -x Tetrad-macOS/Install-Unofficial-Plugin.command ] || { echo "::error::PACKAGE missing Install-Unofficial-Plugin.command"; exit 1; }
+          [ -f "Tetrad-macOS/Tetrad Mapper (paste into Scripter).txt" ] || { echo "::error::PACKAGE missing the mapper"; exit 1; }
+          ditto -c -k --keepParent Tetrad-macOS Tetrad-macOS.zip
+          ls -l Tetrad-macOS Tetrad-macOS.zip
+          # Package contents are also written as annotations (readable through the API).
+          echo "::notice::PACKAGE archs: $(lipo -archs Tetrad-macOS/Tetrad.component/Contents/MacOS/Tetrad)"
+          unzip -Z Tetrad-macOS.zip | grep -E "Install-Unofficial|INSTALL.txt|auval.log|Mapper|Contents/MacOS/Tetrad$" | while IFS= read -r line; do echo "::notice::ZIP: $line"; done
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tetrad-macOS
+          path: Tetrad-macOS.zip
+          if-no-files-found: error
+
+      # A second way to get the package, besides the Actions page: a private DRAFT release (only people with
+      # access to the repo can see it) holding the same zip. Older drafts of this kind are removed first.
+      # A failure here never fails the build.
+      - name: Private draft release with the package
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for id in $(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[] | select(.draft and (.name | startswith("Tetrad test build"))) | .id'); do
+            gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
+          done
+          ls window-pictures/*.png >/dev/null 2>&1 && ditto -c -k window-pictures Tetrad-window-pictures.zip
+          gh release create "test-build-${GITHUB_RUN_NUMBER}" Tetrad-macOS.zip $(ls Tetrad-window-pictures.zip 2>/dev/null) --draft --target "$GITHUB_SHA" \
+            --title "Tetrad test build ${GITHUB_RUN_NUMBER} (${GITHUB_SHA::7})" \
+            --notes "Same package as the Tetrad-macOS artifact of this run. Draft: not public."
+          echo "::notice::DRAFT-RELEASE: created test-build-${GITHUB_RUN_NUMBER}"
