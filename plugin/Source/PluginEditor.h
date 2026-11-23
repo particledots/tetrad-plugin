@@ -7,17 +7,17 @@
 // Drift. Only what moved is drawn again (Strange Drift 0.1.1).
 //
 // Cheaper drawing (0.2.0; 0.1.0's open window cost about 10 points of Logic's CPU meter on the Intel Mac):
-//   - macOS merges all the areas asked to be redrawn before one screen refresh into one rectangle around them all. In
-//     0.1.0 the big lights (top) and the output lights (bottom) changed together, so nearly the whole window was
-//     redrawn 30 times a second. From 0.2.0 the two rows take turns on alternate screen refreshes (each still about
-//     30 times a second), so each redraw is one thin row;
-//   - each light is its own small component painting its own patch, so only those patches are drawn;
 //   - everything that never moves (labels, cards, lines, the output names and CC numbers) is drawn once into a picture
-//     (PanelBackground, kept by JUCE at the window's real pixel size);
+//     (PanelBackground, kept by JUCE at the window's real pixel size) and copied from there;
 //   - each kind of light is drawn once into small pictures (its glow and its core) at the window's real pixel size,
 //     and every frame only copies them at the right brightness, instead of working out soft circles again;
-//   - a light is redrawn only when its brightness moves by a 64th, and the big lights' patches stop above the
-//     sliders.
+//   - each light is its own small component painting only its own patch;
+//   - a light is redrawn only when its brightness moves by a 64th, and the big lights' patches stop above the sliders.
+// Measured in a real window inside a host window on the build Mac (windowcost.cpp, three rounds against 0.1.0): the
+// open window's extra CPU went from about 7.5 to about 6.4 points of a core. About 2.5 of that is what any open JUCE
+// window costs there even with nothing moving. Tried and measured, and not used because they cost more or saved
+// nothing: the two rows of lights on alternate screen refreshes, JUCE's Metal drawing route, drawing without a layer,
+// keeping the controls as pictures, 20 frames a second.
 
 #pragma once
 
@@ -142,16 +142,13 @@ public:
 };
 
 // Everything that moves: the channel lights, the output lights, the read-outs, the mode light, the Waves view. Not a
-// component itself: it owns the light patches (added to the panel by attach) and keeps what each one shows. At each
-// screen refresh it updates one of two rows in turn: the top row (big lights, read-outs, mode light, "no tempo") or
-// the bottom row (the output lights), asking only the patches that changed to draw again. A timer takes over if the
-// screen refreshes stop arriving.
+// component itself: it owns the light patches (added to the panel by attach), keeps what each one shows, and 30 times
+// a second asks only the patches that changed to draw again.
 // How the window draws. The plugin uses the defaults; the real-window cost check (windowcost.cpp) tries others to
 // compare them on the build Mac.
 struct LightsDrawSettings
 {
     double framesPerSecond = 30.0;           // 0: the lights stand still (cost check only)
-    bool cacheControls = false;              // every control kept as a picture (setBufferedToImage)
 };
 
 class LightsLayer : private juce::Timer
@@ -162,8 +159,8 @@ public:
     explicit LightsLayer (TetradProcessor& p);
     ~LightsLayer() override { stopTimer(); }
     void attach (juce::Component& parent, std::array<std::array<OutputSwitch, 3>, 4>& outputs);
-    void update();                           // both rows at once (the offline checks, and the timer if refreshes stop)
-    void updateRow (int row, bool force);    // 0: the top row; 1: the output lights
+    void update();                           // one frame (the timer calls it 30 times a second)
+    void updateRow (int row, bool force);    // 0: the big lights, read-outs, mode light, "no tempo"; 1: the output lights
     void setWaves (bool shouldShowWaves);
     bool isWaves() const { return waves; }
 

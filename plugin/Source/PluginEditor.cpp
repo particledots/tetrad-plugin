@@ -560,11 +560,6 @@ TetradPanel::TetradPanel (TetradProcessor& p)
     exLookAtt = std::make_unique<juce::ParameterAttachment> (*vts.getParameter (TetradParams::exOn), [this] (float v) { setExLook (v >= 0.5f); }, nullptr);
     exLookAtt->sendInitialUpdate();
 
-    if (LightsLayer::drawSettings.cacheControls)
-        for (auto* c : getChildren())
-            if (c != &background && dynamic_cast<LightSpot*> (c) == nullptr && dynamic_cast<OutputSwitch*> (c) == nullptr)
-                c->setBufferedToImage (true);
-
     // Lights | Waves: one or the other; the choice is kept in the saved state.
     viewChoices.onChoose = [this] (int k) { proc.getValueTreeState().state.setProperty (wavesViewProperty, k == 1, nullptr); };
     addAndMakeVisible (viewChoices);

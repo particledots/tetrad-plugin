@@ -3,7 +3,8 @@
 // be compared on the same Mac in the same way.
 //
 // The processor runs as in Logic (a block every 10 ms on its own thread), and the process's CPU time is read
-// (all threads, as Activity Monitor counts it): with no window, with the window open at 100%, and at 150%.
+// (all threads, as Activity Monitor counts it): with no window, then with the window open as a view inside a host
+// window (as in Logic).
 // Usage: TetradWindowCost <label> [folder for screenshots] [seconds per reading, default 8]
 
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -106,9 +107,9 @@ int main (int argc, char** argv)
     };
 
    #ifdef TETRAD_WINDOWCOST_VARIANTS
+    // As the plugin draws, and with the lights standing still (what any open window costs).
     struct Variant { const char* name; bool direct; double fps; };
-    const Variant variants[] = { { "layer-30fps", false, 30.0 }, { "direct-30fps", true, 30.0 }, { "layer-20fps", false, 20.0 },
-                                 { "direct-20fps", true, 20.0 }, { "layer-still", false, 0.0 }, { "direct-still", true, 0.0 } };
+    const Variant variants[] = { { "layer-30fps", false, 30.0 }, { "layer-still", false, 0.0 } };
     for (auto& v : variants)
     {
         LightsLayer::drawSettings.framesPerSecond = v.fps;
@@ -117,7 +118,6 @@ int main (int argc, char** argv)
     LightsLayer::drawSettings = {};
    #else
     openWindow ("layer-30fps", false, true);
-    openWindow ("direct-30fps", true, true);
    #endif
     audio.stopThread (2000);
 
