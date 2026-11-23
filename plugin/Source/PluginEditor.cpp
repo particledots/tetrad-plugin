@@ -238,10 +238,11 @@ void LightsLayer::onVBlank()
 {
     const double now = juce::Time::getMillisecondCounterHiRes();
     lastVBlankAt = now;
-    if (now - lastRowAt < 15.0) return;                  // at most 60 rows a second: each row at most about 30 times a second
+    const double gap = 1000.0 / juce::jmax (1.0, drawSettings.framesPerSecond) / (drawSettings.rowsTakeTurns ? 2.0 : 1.0);
+    if (now - lastRowAt < gap - 2.0) return;
     lastRowAt = now;
-    updateRow (nextRow, false);
-    nextRow ^= 1;
+    if (drawSettings.rowsTakeTurns) { updateRow (nextRow, false); nextRow ^= 1; }
+    else update();
 }
 
 void LightsLayer::timerCallback()
@@ -570,6 +571,11 @@ TetradPanel::TetradPanel (TetradProcessor& p)
     exSwitchAtt = std::make_unique<ButtonAttachment> (vts, TetradParams::exOn, exSwitch);
     exLookAtt = std::make_unique<juce::ParameterAttachment> (*vts.getParameter (TetradParams::exOn), [this] (float v) { setExLook (v >= 0.5f); }, nullptr);
     exLookAtt->sendInitialUpdate();
+
+    if (LightsLayer::drawSettings.cacheControls)
+        for (auto* c : getChildren())
+            if (c != &background && dynamic_cast<LightSpot*> (c) == nullptr && dynamic_cast<OutputSwitch*> (c) == nullptr)
+                c->setBufferedToImage (true);
 
     // Lights | Waves: one or the other; the choice is kept in the saved state.
     viewChoices.onChoose = [this] (int k) { proc.getValueTreeState().state.setProperty (wavesViewProperty, k == 1, nullptr); };

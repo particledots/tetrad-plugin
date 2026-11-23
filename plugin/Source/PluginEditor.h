@@ -146,9 +146,20 @@ public:
 // screen refresh it updates one of two rows in turn: the top row (big lights, read-outs, mode light, "no tempo") or
 // the bottom row (the output lights), asking only the patches that changed to draw again. A timer takes over if the
 // screen refreshes stop arriving.
+// How the window draws. The plugin uses the defaults; the real-window cost check (windowcost.cpp) tries others to
+// compare them on the build Mac.
+struct LightsDrawSettings
+{
+    double framesPerSecond = 30.0;
+    bool rowsTakeTurns = false;              // the two rows on alternate screen refreshes, instead of together
+    bool cacheControls = false;              // every control kept as a picture (setBufferedToImage)
+};
+
 class LightsLayer : private juce::Timer
 {
 public:
+    static inline LightsDrawSettings drawSettings;
+
     explicit LightsLayer (TetradProcessor& p);
     ~LightsLayer() override { stopTimer(); }
     void attach (juce::Component& parent, std::array<std::array<OutputSwitch, 3>, 4>& outputs);

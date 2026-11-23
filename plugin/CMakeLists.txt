@@ -87,4 +87,22 @@ if(TETRAD_BUILD_PREVIEW)
     target_link_libraries(TetradWindowCost
         PRIVATE tetrad_engine juce::juce_audio_processors juce::juce_gui_basics
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+    target_compile_definitions(TetradWindowCost PRIVATE TETRAD_WINDOWCOST_VARIANTS=1)
+
+    # The same, with JUCE's other macOS drawing route (each changed area drawn on its own, through Metal), to compare.
+    juce_add_console_app(TetradWindowCostMetal PRODUCT_NAME "TetradWindowCostMetal")
+    target_sources(TetradWindowCostMetal PRIVATE preview/windowcost.cpp ${TETRAD_PLUGIN_SOURCES})
+    target_include_directories(TetradWindowCostMetal PRIVATE Source)
+    target_compile_definitions(TetradWindowCostMetal PRIVATE
+        JucePlugin_Name="Tetrad"
+        JucePlugin_VersionString="${PROJECT_VERSION}"
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+        TETRAD_WINDOWCOST_VARIANTS=1
+        JUCE_COREGRAPHICS_RENDER_WITH_MULTIPLE_PAINT_CALLS=1
+    )
+    target_link_libraries(TetradWindowCostMetal
+        PRIVATE tetrad_engine juce::juce_audio_processors juce::juce_gui_basics
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()

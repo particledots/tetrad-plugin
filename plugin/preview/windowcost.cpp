@@ -80,7 +80,9 @@ int main (int argc, char** argv)
 
     measure (2.0);
     const double closed = measure (seconds);
-    double open100 = 0.0, open150 = 0.0;
+    std::cout << "windowcost " << label << ": window closed " << juce::String (closed, 1) << "% of a core" << std::endl;
+
+    auto openWindow = [&] (const juce::String& name, int width, bool shot)
     {
         std::unique_ptr<juce::AudioProcessorEditor> ed (proc.createEditor());
         ed->setTopLeftPosition (40, 60);
@@ -89,21 +91,34 @@ int main (int argc, char** argv)
        #else
         ed->addToDesktop (0);
        #endif
+        ed->setSize (width, juce::roundToInt (width * 560.0 / 920.0));
         ed->setVisible (true);
         ed->toFront (true);
         measure (2.0);
-        open100 = measure (seconds);
-        screenshot (shots, "real-window-" + label + "-100.png");
-        ed->setSize (1380, juce::roundToInt (1380.0 * 560.0 / 920.0));
-        measure (2.0);
-        open150 = measure (seconds);
-        screenshot (shots, "real-window-" + label + "-150.png");
+        const double open = measure (seconds);
+        if (shot) screenshot (shots, "real-window-" + label + "-" + name + ".png");
         ed->removeFromDesktop();
-    }
+        std::cout << "windowcost " << label << " " << name << ": open " << juce::String (open, 1) << "% (+" << juce::String (open - closed, 1) << ")" << std::endl;
+    };
+
+   #ifdef TETRAD_WINDOWCOST_VARIANTS
+    // This build: the same window drawn in different ways, twice round, to compare.
+    struct Variant { const char* name; double fps; bool turns, cache; };
+    const Variant variants[] = { { "30fps", 30.0, false, false }, { "30fps-rows-take-turns", 30.0, true, false },
+                                 { "20fps", 20.0, false, false }, { "30fps-cached-controls", 30.0, false, true },
+                                 { "20fps-cached-controls", 20.0, false, true } };
+    for (int round = 0; round < 2; ++round)
+        for (auto& v : variants)
+        {
+            LightsLayer::drawSettings = { v.fps, v.turns, v.cache };
+            openWindow (v.name, 920, round == 0);
+        }
+    LightsLayer::drawSettings = {};
+   #else
+    openWindow ("100", 920, true);
+    openWindow ("150", 1380, true);
+   #endif
     audio.stopThread (2000);
 
-    std::cout << "windowcost " << label << ": window closed " << juce::String (closed, 1) << "% of a core, open "
-              << juce::String (open100, 1) << "% (+" << juce::String (open100 - closed, 1) << "), open at 150% "
-              << juce::String (open150, 1) << "% (+" << juce::String (open150 - closed, 1) << ")" << std::endl;
     return 0;
 }
