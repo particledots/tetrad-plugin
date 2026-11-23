@@ -6,11 +6,23 @@ out as smooth MIDI CC. Inspired by the XAOC Devices Batumi II quad LFO and its P
 called Tetrad Ex). All code is our own, written from the manual's description of the controls; it is not a port or
 copy of anything, contains no XAOC code or artwork, and is not affiliated with XAOC Devices.
 
-Status: **version 0.1.0 (milestone 1: the four channels, every mode and output, the mapper) tested in Logic on
-2026-11-22 and working on both test Macs: the M4 Mac mini (macOS Tahoe, Logic Pro 11.2.2) and the Intel Mac (macOS
-12.7.8, Logic Pro 10.7.8).** Tetrad Ex is drawn dimmed on the panel and arrives in milestone 2.
+Status: **version 0.2.0 (milestone 2: Tetrad Ex live, on top of milestone 1) tested in Logic on 2026-11-23 and
+working on both test Macs: the M4 Mac mini (macOS Tahoe, Logic Pro 11.2.2) and the Intel Mac (macOS 12.7.8, Logic Pro
+10.7.8).** Milestone 1 (0.1.0, the four channels, every mode and output, the mapper) passed on both Macs on 2026-11-22.
 
-Tested on both Macs: installing, the window and its lights, resizing, the mapper moving a synth's cutoff smoothly,
+0.2.0 tested on both Macs: it opens as v0.2.0 with Ex dimmed and off; switching Ex on changes nothing until a control is
+moved; sine level, shape with fold, width with the shape knob left, a stepped random asgn wave, Ex off again, and
+save and reopen with Ex on. The mapper is unchanged (0.1.0).
+
+The open window's CPU cost was **not** reduced in practice. Intel Mac, 0.2.0 (Logic's % CPU, transport running, a few
+notes, Tetrad and the Tetrad Mapper on the track): 20-21% window closed, 19-21% window closed with the mapper bypassed,
+33-35% window open. For 0.1.0 the same readings were 18-21% closed and 29-33% open. The drawing was made cheaper (on
+GitHub's Mac the open window's extra cost measured about 7.3 to 6.4 points), but about 2.5 points of that cost is the
+floor of any open plugin window of this kind, and on the Intel Mac the readings did not improve (the open window
+added about 13 points, against about 11). Treat an open window as costing about 10 to 14 points on that Mac and close
+it while playing if CPU is tight.
+
+Milestone 1 tested on both Macs: installing, the window and its lights, resizing, the mapper moving a synth's cutoff smoothly,
 phase and multiply mode, mod from, reset from Notes, following Logic's tempo in time with the click, switching an
 output off and on, save and reopen, and sharing a track with Ogdoad (Ogdoad, Tetrad, Ogdoad Mapper, Tetrad Mapper).
 CPU on the Intel Mac (Activity Monitor, Logic's % CPU, transport running, a few notes playing): Tetrad alone 18-21%
@@ -64,6 +76,21 @@ mapper's work is small; the open window is the larger share.
 - Each project opens with every channel at the start of its cycle, like the module switched on. The random seed is
   saved with the project, so the random waves repeat; a new copy of the plugin gets a new seed.
 
+## Tetrad Ex (the Poti II section)
+
+Switch it on with the pill at the top of the Ex section; while it is off the controls are dimmed and Tetrad sends
+exactly the MIDI of 0.1.0. With Ex on and every control at its default the MIDI is also identical. Ex adds no outputs
+and no MIDI of its own; it changes the values the channels already send, so the mapper needs nothing new. Per channel:
+
+- **sine** and **asgn** (level knobs): the size of that output around its centre; fully left holds it at half.
+- **wave**: the channel's own asgn wave, or *Main* to follow the global asgn wave.
+- **shape**, **from** and the target: the shape knob goes from -1 to +1. *from* is *off* (the knob alone sets the
+  shape), the mod wheel, or another channel's sine or asgn (read one tick earlier). The target is one of:
+  - *fold*: the sine and asgn fold back on themselves, more as the shape moves from the middle (gain 1 to 5).
+  - *wave*: steps along the wave menu by up to 5 places, wrapping round.
+  - *width*: the rect's duty cycle moves from 5% to 95% (50% at the middle). Rising edges are at least 48 ms apart,
+    so edges, notes and resets never multiply.
+
 ## How the outputs reach a knob in Logic
 
 Logic has no CV. The sine and asgn outputs go out as standard 14-bit CC pairs (16,384 steps instead of 128), the rect
@@ -83,7 +110,7 @@ channel). Every CC that MIDI leaves without a job is already taken by those five
 jobs (breath, foot, portamento time and balance with their standard fine partners; the pedal switches 66-69 and
 sound controllers 1-4 (70-73); effect depths 91-94). That is safe: the Tetrad Mapper stops them before the instrument, and none of those plugins
 listens to them. Avoided on purpose: bank select, mod wheel, data entry, volume, pan, expression, sustain, RPN / NRPN
-and the channel mode messages. CC 65, 74, 84 and 95 are kept free for Tetrad Ex.
+and the channel mode messages. CC 65, 74, 84 and 95 stay unused (kept free in case Ex ever needs them).
 
 The **Tetrad Mapper** (a Scripter script, in the download as `Tetrad Mapper (paste into Scripter).txt`, source in
 `tools/mapper/Tetrad-Mapper.js`) sits in a MIDI FX slot below Tetrad. It has 8 lanes; each lane has a Source (A, B, C
@@ -91,7 +118,7 @@ or D: sine, asgn or rect), a Target (Logic's *Learn plug-in parameter*), and Min
 any plugin below it on the same channel strip and stops Tetrad's CC from reaching the instrument; notes (including the
 rect notes) pass through. A rect source jumps the knob between Min and Max. Set up once per Mac (saved as a Scripter
 preset), then chosen from Scripter's preset menu on each track. `INSTALL.txt` in the download has the steps. Tetrad
-Ex adds no outputs, so this mapper is already the final one.
+Ex adds no outputs, so this mapper is the final one.
 
 Sharing a track: the plugins first, then their mappers. With Ogdoad: Ogdoad, Tetrad, Ogdoad Mapper, Tetrad Mapper
 (Ogdoad's mapper first, so the Tetrad Mapper only sees Tetrad's messages). Plugins only hear notes from above them:
@@ -101,7 +128,7 @@ Smoothness and CPU: each output is sent only when it has moved at least 0.2% of 
 moves, at most once every 6 ms, at its exact sample (Strange Drift 0.1.1's rule); the coarse part only when it changes.
 Any LFO faster than about 0.2 Hz already sends at the 6 ms limit, so the traffic is about the same at normal speeds as
 at the top rate: about 2,800 MIDI messages a second with all 12 outputs on (Ogdoad with Ex on sends about 4,600), about
-1,900 at the defaults, about 500 with all four at 0.05 Hz. Switching off the outputs you do not use cuts it. With
+1,900 at the defaults, about 500 with all four at 0.05 Hz (with Ex shaping every channel hard: about 2,950 and 740). Switching off the outputs you do not use cuts it. With
 Ogdoad (Ex on) on the same track, Logic carries about 7,400 a second, and the two mappers together handle about 10,200
 (Ogdoad's mapper first) instead of 4,600. The engine uses well under 0.1% of one core.
 
@@ -150,14 +177,16 @@ Ogdoad (Ex on) on the same track, Logic carries about 7,400 a second, and the tw
   large), every control moving only its own parameter, the choice buttons following their parameters, the mode light,
   only what moved drawn again, save and reload (including the seed, the view and the window size), the window size
   limits and locked proportions, MIDI passing through, CC on the chosen channel, changing the channel, bypass, rect
-  notes, notes resetting, the mod wheel, Logic's tempo, block sizes.
+  notes, notes resetting, the mod wheel, Logic's tempo, block sizes; Ex off and Ex at defaults sending the same MIDI as
+  0.1.0, every Ex control, fold / wave / width and every shape source, the 48 ms rise gap, a 0.1.0 project opening.
+- **Window cost** (GitHub's Mac): the real window hosted inside a host window, 0.1.0 against this build, three rounds.
 
 ## Fixed names
 
 Plugin code `Ttrd`, manufacturer `Pdot`, bundle id `com.particledots.tetrad`, target `Tetrad`, engine library
 `tetrad_engine`. Parameter ids: `mode`, `asgnWave`, `tempoFollow`, `rectOut`, `outChannel`, `slider1` to `slider4`,
 `modFrom1` to `modFrom4`, `modDepth1` to `modDepth4`, `resetFrom1` to `resetFrom4`, `sineOn1` to `sineOn4`, `asgnOn1`
-to `asgnOn4`, `rectOn1` to `rectOn4` (0.1.0; 1-4 = A-D). Reserved for Tetrad Ex: `exOn`, `sineLevel1-4`,
+to `asgnOn4`, `rectOn1` to `rectOn4` (1-4 = A-D). Tetrad Ex (0.2.0): `exOn`, `sineLevel1-4`,
 `asgnLevel1-4`, `exWave1-4`, `shapeAmount1-4`, `shapeFrom1-4`, `shapeTarget1-4`. Other saved state: `randomSeed`,
 `wavesView`, `editorWidth`. The CC and note numbers in the table above, the menu orders (mode, asgn wave, rect out,
 mod from, reset from) and the mapper's Source menu order are fixed too. These never change, so saved projects keep

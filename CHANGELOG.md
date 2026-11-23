@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 (milestone 2, 2026-11-23): tested in Logic on the M4 Mac mini and the Intel Mac
+
+- Tetrad Ex is live with the reserved ids: on switch; per channel sine level, asgn level, own asgn wave or Main,
+  shape amount, shape from (off, mod wheel, another channel's sine or asgn) and shape target (fold, wave, width).
+  Ex off, or on with defaults, sends the same MIDI as 0.1.0. No new CC; the Tetrad Mapper stays 0.1.0.
+- Width keeps rising edges at least 48 ms apart. MIDI with Ex shaping every channel hard: about 2,950 messages a
+  second at the top rate (ceiling 2,987).
+- Lights drawn more cheaply: pre-drawn light images, a cached panel, small per-light components, one 30 frame a second
+  timer. On GitHub's Mac the open window's extra CPU measured about 7.3 to 6.4 points against 0.1.0.
+- Tested 2026-11-23: steps 1-8 passed on the M4 Mac mini and the Intel Mac. Intel CPU: 20-21% window closed, 19-21%
+  closed with the mapper bypassed, 33-35% window open (0.1.0: 18-21% closed, 29-33% open). **The open window's cost did
+  not improve on the Intel Mac**; it is still open work.
+
 ## 0.1.0 (milestone 1, 2026-11-22): tested in Logic on the M4 Mac mini and the Intel Mac
 
 - First build. Four linked LFO channels (A-D) with sine, asgn and rect outputs; free, phase, divide and multiply
