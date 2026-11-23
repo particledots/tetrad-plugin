@@ -173,11 +173,12 @@ jobs:
             || { tail -n 30 wc-old.log; echo "::warning::WINDOWCOST: 0.1.0 did not build"; }
           OLD="$(find build-010 -type f -name TetradPreview -perm -u+x | head -n 1)"
           mkdir -p window-pictures
-          [ -n "$OLD" ] && "$OLD" 0.1.0 window-pictures > wc.log 2>&1
-          "$NEW" this-build window-pictures >> wc.log 2>&1
-          [ -n "$OLD" ] && "$OLD" 0.1.0-again window-pictures >> wc.log 2>&1
-          [ -n "$METAL" ] && "$METAL" metal window-pictures >> wc.log 2>&1
-          [ -n "$OLD" ] && "$OLD" 0.1.0-third window-pictures >> wc.log 2>&1
+          : > wc.log
+          for round in 1 2 3; do
+            [ -n "$OLD" ] && "$OLD" 0.1.0 window-pictures 10 >> wc.log 2>&1
+            "$NEW" this-build window-pictures 10 >> wc.log 2>&1
+          done
+          [ -n "$METAL" ] && "$METAL" metal window-pictures 10 >> wc.log 2>&1
           cat wc.log
           grep -h '^windowcost' wc.log | while IFS= read -r line; do echo "::notice::WINDOWCOST: $line"; done
 

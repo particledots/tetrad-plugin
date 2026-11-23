@@ -238,6 +238,7 @@ void LightsLayer::onVBlank()
 {
     const double now = juce::Time::getMillisecondCounterHiRes();
     lastVBlankAt = now;
+    if (drawSettings.framesPerSecond <= 0.0) return;     // (cost check only: the lights stand still)
     const double gap = 1000.0 / juce::jmax (1.0, drawSettings.framesPerSecond) / (drawSettings.rowsTakeTurns ? 2.0 : 1.0);
     if (now - lastRowAt < gap - 2.0) return;
     lastRowAt = now;

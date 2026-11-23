@@ -104,10 +104,10 @@ int main (int argc, char** argv)
    #ifdef TETRAD_WINDOWCOST_VARIANTS
     // This build: the same window drawn in different ways, twice round, to compare.
     struct Variant { const char* name; double fps; bool turns, cache; };
-    const Variant variants[] = { { "30fps", 30.0, false, false }, { "30fps-rows-take-turns", 30.0, true, false },
-                                 { "20fps", 20.0, false, false }, { "30fps-cached-controls", 30.0, false, true },
-                                 { "20fps-cached-controls", 20.0, false, true } };
-    for (int round = 0; round < 2; ++round)
+    const Variant variants[] = { { "still", 0.0, false, false }, { "5fps", 5.0, false, false }, { "15fps", 15.0, false, false },
+                                 { "30fps", 30.0, false, false }, { "30fps-rows-take-turns", 30.0, true, false },
+                                 { "30fps-cached-controls", 30.0, false, true } };
+    for (int round = 0; round < 1; ++round)
         for (auto& v : variants)
         {
             LightsLayer::drawSettings = { v.fps, v.turns, v.cache };
