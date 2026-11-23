@@ -7,14 +7,17 @@
 // Drift. Only what moved is drawn again (Strange Drift 0.1.1).
 //
 // Cheaper drawing (0.2.0; 0.1.0's open window cost about 10 points of Logic's CPU meter on the Intel Mac):
-//   - everything that never moves (labels, cards, lines) is drawn once into a picture (PanelBackground, kept by JUCE as
-//     an image at the window's real pixel size) and only copied where a light changed, instead of being drawn again;
+//   - macOS merges all the areas asked to be redrawn before one screen refresh into one rectangle around them all. In
+//     0.1.0 the big lights (top) and the output lights (bottom) changed together, so nearly the whole window was
+//     redrawn 30 times a second. From 0.2.0 the two rows take turns on alternate screen refreshes (each still about
+//     30 times a second), so each redraw is one thin row;
+//   - each light is its own small component painting its own patch, so only those patches are drawn;
+//   - everything that never moves (labels, cards, lines, the output names and CC numbers) is drawn once into a picture
+//     (PanelBackground, kept by JUCE at the window's real pixel size);
 //   - each kind of light is drawn once into small pictures (its glow and its core) at the window's real pixel size,
 //     and every frame only copies them at the right brightness, instead of working out soft circles again;
-//   - the lights layer draws only the lights inside the area being redrawn, with fonts made once; the output names and
-//     CC numbers under the output lights are part of the still picture;
-//   - a light is redrawn only when its brightness moves by a 64th, and the big lights' areas no longer touch the
-//     sliders, so the sliders are not redrawn with them.
+//   - a light is redrawn only when its brightness moves by a 64th, and the big lights' patches stop above the
+//     sliders.
 
 #pragma once
 
@@ -119,34 +122,45 @@ public:
     void paintButton (juce::Graphics&, bool over, bool down) override;
 };
 
-// A clickable output light: switches its output on and off. The light itself is drawn by the LightsLayer.
+// One light (or read-out) on the panel: a small patch that paints its own background and what it shows. No clicks.
+class LightSpot : public juce::Component
+{
+public:
+    explicit LightSpot (std::function<void (juce::Graphics&)> p) : painter (std::move (p)) { setInterceptsMouseClicks (false, false); }
+    void paint (juce::Graphics& g) override { painter (g); }
+private:
+    std::function<void (juce::Graphics&)> painter;
+};
+
+// A clickable output light: switches its output on and off, and paints its own light (a patch, as LightSpot).
 class OutputSwitch : public juce::Button
 {
 public:
     OutputSwitch() : juce::Button ("output") { setClickingTogglesState (true); }
-    void paintButton (juce::Graphics&, bool, bool) override {}
+    void paintButton (juce::Graphics& g, bool, bool) override { if (painter) painter (g); }
+    std::function<void (juce::Graphics&)> painter;
 };
 
-// Everything that moves: the channel lights, the output lights, the read-outs, the mode light, the Waves view.
-// Drawn over the panel, under the controls, and never takes mouse clicks.
-class LightsLayer : public juce::Component, private juce::Timer
+// Everything that moves: the channel lights, the output lights, the read-outs, the mode light, the Waves view. Not a
+// component itself: it owns the light patches (added to the panel by attach) and keeps what each one shows. At each
+// screen refresh it updates one of two rows in turn: the top row (big lights, read-outs, mode light, "no tempo") or
+// the bottom row (the output lights), asking only the patches that changed to draw again. A timer takes over if the
+// screen refreshes stop arriving.
+class LightsLayer : private juce::Timer
 {
 public:
     explicit LightsLayer (TetradProcessor& p);
     ~LightsLayer() override { stopTimer(); }
-    void paint (juce::Graphics&) override;
-    void update();                           // one frame: asks for a redraw of only what moved (the timer calls it 30 times a second)
-    // Offline checks only, to measure the saving: draw as 0.1.0 did (every light and label whatever the area, the soft
-    // circles worked out each time, no picture of the still parts). Never set in the plugin.
-    static inline bool drawLikeVersion010 = false;
-    void setWaves (bool shouldShowWaves) { if (waves != shouldShowWaves) { waves = shouldShowWaves; repaint(); } }
+    void attach (juce::Component& parent, std::array<std::array<OutputSwitch, 3>, 4>& outputs);
+    void update();                           // both rows at once (the offline checks, and the timer if refreshes stop)
+    void updateRow (int row, bool force);    // 0: the top row; 1: the output lights
+    void setWaves (bool shouldShowWaves);
     bool isWaves() const { return waves; }
 
-    // The big light's area stops just above the slider (y 146), so the slider is not redrawn with it.
+    // The big light's patch stops just above the slider (y 146).
     static juce::Rectangle<int> lightArea (int ch)   { return { TetradStyle::kColX[ch] + 2, 93, TetradStyle::kColW - 4, 53 }; }
     static juce::Rectangle<int> readoutArea (int ch) { return { TetradStyle::kColX[ch] + 2, 298, TetradStyle::kColW - 4, 32 }; }
     static juce::Rectangle<int> outArea (int ch, int which) { return { TetradStyle::outX (ch, which) - 14, TetradStyle::kOutY - 14, 28, 28 }; }
-    static juce::Rectangle<int> shapeLightArea (int ch) { return { 617, TetradStyle::exRowTop (ch) + 35, 22, 22 }; }
     static juce::Rectangle<int> modeLightArea()      { return { 114, 58, 28, 24 }; }
     static juce::Rectangle<int> tempoNoteArea()      { return { 60, 286, 76, 16 }; }
 
@@ -162,21 +176,32 @@ private:
         float core = 6.0f; float halos[3] {}; float alphas[3] {};
         float scale = 0.0f; juce::Image glow, base, lit;
     };
-    enum { bigLight = 0, outLight, shapeLight, numSprites };
+    enum { bigLight = 0, outLight, numSprites };
     std::array<Sprite, numSprites> sprites;
     void drawSprite (juce::Graphics& g, int kind, float cx, float cy, double level);
 
     void timerCallback() override;
+    void onVBlank();
     juce::String readout (int ch, juce::String& under) const;
+    void paintChannelLight (juce::Graphics&, int ch);
+    void paintOutput (juce::Graphics&, int ch, int which);
+
     TetradProcessor& proc;
     bool waves = false;
     TetradProcessor::Traces traces {};
+    std::array<std::unique_ptr<LightSpot>, 4> channelLights, readouts;
+    std::unique_ptr<LightSpot> modeLight, tempoNote;
+    std::array<std::array<OutputSwitch*, 3>, 4> outs {};
+    std::unique_ptr<juce::VBlankAttachment> vblank;
+    int nextRow = 0;
+    double lastRowAt = 0.0, lastVBlankAt = -1.0e9;
+
+    // What each patch shows (what it was last asked to draw).
     std::array<int, 4> drawnLight {};
-    std::array<std::array<int, 3>, 4> drawnOut {};
-    std::array<juce::String, 4> drawnReadout;
+    std::array<std::array<int, 3>, 4> drawnOut {};      // light step 0-64, or -1 for switched off
+    std::array<juce::String, 4> drawnReadout, drawnUnder;
     std::array<int, 4> drawnMarker { -2, -2, -2, -2 };
-    std::array<int, 4> drawnShape {};
-    bool drawnBlink = false, drawnMissing = false, drawnWaves = false, firstFrame = true;
+    bool drawnBlink = false, drawnMissing = false, firstFrame = true;
     double blinkUntil = 0.0;
     int drawnMode = -1;
 };
@@ -201,7 +226,6 @@ public:
     LightsLayer& lightsLayer() { return lights; }
     const PanelBackground& panelBackground() const { return background; }
     bool exControlsDimmed() const { return sineLevelKnobs[0].getAlpha() < 1.0f; }
-    void setBackgroundCached (bool cached) { background.setBufferedToImage (cached); }   // offline checks only (see drawLikeVersion010)
     static inline const juce::Identifier wavesViewProperty { "wavesView" };
 
     static constexpr int kWidth = 920, kHeight = 560;      // the design size; everything is laid out at this size

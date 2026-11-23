@@ -178,7 +178,6 @@ void TetradProcessor::publishToPanel()
         v.note.store (engine.noteOn (ch));
         v.ratio.store (engine.ratioUsed (ch));
         v.length.store (engine.lengthUsed (ch));
-        v.shape.store ((float) engine.shape (ch));
         // For the mode light, which blinks as a slider crosses 90, 180 or 270 degrees (phase mode) or moves to another
         // ratio (divide, multiply), to help set it, as on the module. Only the slider counts, not "mod from".
         const double x = engine.getSettings().slider[ch];

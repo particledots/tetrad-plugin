@@ -61,7 +61,6 @@ public:
         std::atomic<float> sine { 0.0f }, asgn { 0.0f }, hz { 0.0f };
         std::atomic<bool> rect { false }, note { false };
         std::atomic<int> ratio { 1 }, length { 0 }, marker { -1 };   // marker: the slider's phase quarter or ratio, for the mode light
-        std::atomic<float> shape { 0.0f };                             // Tetrad Ex: the channel's shape, -1..+1
     };
     std::array<ChannelView, tetrad::kNumChannels> view {};
     std::atomic<bool> tempoMissing { false };

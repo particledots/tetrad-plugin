@@ -2,7 +2,7 @@
 //   1. draws the window to picture files (default, the approved example, Waves view, divide, multiply, tempo with no
 //      tempo from the host, outputs switched off, three sizes);
 //   2. checks that all 58 ids exist (33 from 0.1.0, 25 for Tetrad Ex), each has exactly one control, and each control
-//      moves exactly its own parameter; Tetrad Ex's defaults, menus and dimming; what the window costs to draw;
+//      moves exactly its own parameter; Tetrad Ex's defaults, menus and dimming;
 //   3. checks saving and reloading: every setting, the random seed, the Lights | Waves choice and the window size;
 //   4. checks the MIDI: everything that comes in passes through untouched, the outputs come out on CC 2-8, 34-40,
 //      66-73, 91-94 on the chosen channel, the mod wheel and notes work, changing the channel and bypassing leave
@@ -299,7 +299,6 @@ int main (int argc, char** argv)
         exExample (proc);
         pump (proc, 2.0);
         snapshotTo (*ed, outDir.getChildFile ("tetrad-window-ex.png"));
-        expect (std::fabs (proc.view[0].shape.load()) > 0.0f && std::fabs (proc.view[3].shape.load()) > 0.0f, "Ex on: the panel gets each channel's shape for its light");
         ed->panel.viewChoices.choose (1);
         pump (proc, 3.0);
         snapshotTo (*ed, outDir.getChildFile ("tetrad-window-ex-waves.png"));
@@ -335,64 +334,10 @@ int main (int argc, char** argv)
                   << juce::String (100.0 * slowShare, 1) << "% with all four at 0.01 Hz" << std::endl;
         expect (share > 0.002 && share < 0.20, "at the defaults the window draws only what moved (" + juce::String (100.0 * share, 1) + "% of the panel per frame)");
         expect (slowShare < share, "slow LFOs: even less is drawn again (" + juce::String (100.0 * slowShare, 1) + "%)");
-
-        // What drawing the window costs: 90 frames at the defaults with Ex on, painted the 0.2.0 way (the still parts
-        // copied from their picture, only the lights in the redrawn areas) and the 0.1.0 way (everything drawn again in
-        // those areas), into a picture at 1x and 2x (on a Mac, with the same CoreGraphics drawing Logic's window uses).
         {
-            for (auto* x : proc.getParameters()) x->setValueNotifyingHost (x->getDefaultValue());
-            setParam (proc, "exOn", 1.0f); setParam (proc, "shapeAmount1", 0.5f); setParam (proc, "shapeFrom1", 2.0f);
-            pump (proc, 0.5);
-            auto& layer = ed->panel.lightsLayer();
-            int stillPartsRedrawn = 0;                    // how often the picture of the still parts was drawn again after a run's first frame
-            auto cost = [&] (bool oldWay, float scale)
-            {
-                LightsLayer::drawLikeVersion010 = oldWay;
-                ed->panel.setBackgroundCached (! oldWay);
-                juce::Image img (juce::Image::ARGB, juce::roundToInt (920 * scale), juce::roundToInt (560 * scale), true);
-                double ms = 0.0;
-                int bgAtFirst = 0;
-                for (int f = 0; f < 130; ++f)
-                {
-                    if (f == 1) bgAtFirst = ed->panel.panelBackground().timesDrawn;
-                    runBlocks (proc, 1.0 / 30.0, 480);
-                    layer.update();
-                    auto areas = layer.lastFrameAreas;
-                    if (oldWay)                                   // 0.1.0's areas: the big lights reached the sliders, the outputs their labels
-                        for (int ch = 0; ch < 4; ++ch)
-                        {
-                            if (areas.intersectsRectangle (LightsLayer::lightArea (ch))) areas.add (LightsLayer::lightArea (ch).withTop (92).withHeight (58));
-                            for (int w = 0; w < 3; ++w)
-                                if (areas.intersectsRectangle (LightsLayer::outArea (ch, w))) areas.add (LightsLayer::outArea (ch, w).withSizeKeepingCentre (30, 30).withHeight (44));
-                        }
-                    if (areas.isEmpty()) continue;
-                    const double t0 = juce::Time::getMillisecondCounterHiRes();
-                    {
-                        juce::Graphics g (img);
-                        g.addTransform (juce::AffineTransform::scale (scale));
-                        g.reduceClipRegion (areas);
-                        ed->panel.paintEntireComponent (g, false);
-                    }
-                    if (f >= 10) ms += juce::Time::getMillisecondCounterHiRes() - t0;     // the first 10 frames warm up
-                }
-                if (! oldWay) stillPartsRedrawn = ed->panel.panelBackground().timesDrawn - bgAtFirst;
-                LightsLayer::drawLikeVersion010 = false;
-                ed->panel.setBackgroundCached (true);
-                return ms / 120.0 * 30.0;                                                // milliseconds of drawing per second
-            };
-            // Each measured three times, taking the quickest (the checking computer is shared, so slower runs are noise).
-            double old1 = 1e9, new1 = 1e9, old2 = 1e9, new2 = 1e9;
-            for (int rep = 0; rep < 3; ++rep)
-            {
-                old1 = juce::jmin (old1, cost (true, 1.0f)); new1 = juce::jmin (new1, cost (false, 1.0f));
-                old2 = juce::jmin (old2, cost (true, 2.0f)); new2 = juce::jmin (new2, cost (false, 2.0f));
-            }
-            std::cout << "drawing: " << juce::String (new1, 1) << " ms a second at 1x and " << juce::String (new2, 1) << " at 2x (the 0.1.0 way: "
-                      << juce::String (old1, 1) << " and " << juce::String (old2, 1) << "), " << juce::roundToInt (100.0 * (1.0 - new1 / old1)) << "% and "
-                      << juce::roundToInt (100.0 * (1.0 - new2 / old2)) << "% less" << std::endl;
-            expect (new1 < 0.6 * old1 && new2 < 0.6 * old2, "the window costs less than 60% of the 0.1.0 way to draw, at 1x and 2x");
-            expect (stillPartsRedrawn == 0 && new1 > 0.0, "the still parts are drawn once, not again while the lights move");
-            for (auto* x : proc.getParameters()) x->setValueNotifyingHost (x->getDefaultValue());
+            // Every light is a small patch of its own.
+            int spots = 0; for (auto* c : ed->panel.getChildren()) if (dynamic_cast<LightSpot*> (c) != nullptr) ++spots;
+            expect (spots == 2 + 2 * 4, "the lights are patches of their own (" + juce::String (spots) + " plus the 12 output lights)");
         }
 
         bool rising = true;

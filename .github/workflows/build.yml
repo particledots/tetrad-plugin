@@ -148,12 +148,35 @@ jobs:
           "$PV" window-pictures > preview.log 2>&1; code=$?
           cat preview.log
           echo "::notice::WINDOW: $(grep -h '^window:' preview.log)"
-          echo "::notice::DRAWING: $(grep -h '^drawing:' preview.log)"
           if [ $code -eq 0 ]; then echo "::notice::PREVIEW: $(grep -h 'preview checks:' preview.log)"; else
             echo "::error::PREVIEW: $(grep -h 'preview checks:' preview.log)"
             grep FAIL preview.log | head -10 | while IFS= read -r line; do echo "::error::PREVIEW: $line"; done
           fi
           ls -l window-pictures
+
+      # What the open window costs in a real window on this Mac (the whole process's CPU, as Activity Monitor counts
+      # it), for this build and for 0.1.0 built from its own commit, measured the same way, one after the other.
+      # Never fails the build; the readings are written as annotations, the screenshots go with the window pictures.
+      - name: Window cost in a real window (0.1.0 against this build)
+        continue-on-error: true
+        timeout-minutes: 40
+        run: |
+          set +e
+          cmake --build build --config Release --target TetradWindowCost -j 4 > wc-build.log 2>&1 || { tail -n 30 wc-build.log; echo "::warning::WINDOWCOST: did not build"; exit 0; }
+          NEW="$(find build -type f -name TetradWindowCost -perm -u+x | head -n 1)"
+          git fetch -q --depth=1 origin 57ab15b673fe17510f4c042bc9c5481046630d7b && git worktree add -f ../tetrad-010 FETCH_HEAD > /dev/null 2>&1
+          cp plugin/preview/windowcost.cpp ../tetrad-010/plugin/preview/preview.cpp
+          JUCESRC="$(find "$PWD/build/_deps" -maxdepth 1 -type d -name 'juce-src' | head -n 1)"
+          ( cmake -S ../tetrad-010 -B build-010 -DCMAKE_BUILD_TYPE=Release -DTETRAD_BUILD_PREVIEW=ON -DTETRAD_BUILD_TESTS=OFF \
+              -DCMAKE_OSX_ARCHITECTURES=arm64 -DTETRAD_JUCE_DIR="$JUCESRC" && cmake --build build-010 --target TetradPreview -j 4 ) > wc-old.log 2>&1 \
+            || { tail -n 30 wc-old.log; echo "::warning::WINDOWCOST: 0.1.0 did not build"; }
+          OLD="$(find build-010 -type f -name TetradPreview -perm -u+x | head -n 1)"
+          mkdir -p window-pictures
+          [ -n "$OLD" ] && "$OLD" 0.1.0 window-pictures > wc.log 2>&1
+          "$NEW" this-build window-pictures >> wc.log 2>&1
+          [ -n "$OLD" ] && "$OLD" 0.1.0-again window-pictures >> wc.log 2>&1
+          cat wc.log
+          grep -h '^windowcost' wc.log | while IFS= read -r line; do echo "::notice::WINDOWCOST: $line"; done
 
       - name: Upload the window pictures
         continue-on-error: true

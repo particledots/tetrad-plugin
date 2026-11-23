@@ -72,4 +72,19 @@ if(TETRAD_BUILD_PREVIEW)
     target_link_libraries(TetradPreview
         PRIVATE tetrad_engine juce::juce_audio_processors juce::juce_gui_basics
         PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    # What the open window costs, in a real window (the workflow builds the same file against 0.1.0 too, to compare).
+    juce_add_console_app(TetradWindowCost PRODUCT_NAME "TetradWindowCost")
+    target_sources(TetradWindowCost PRIVATE preview/windowcost.cpp ${TETRAD_PLUGIN_SOURCES})
+    target_include_directories(TetradWindowCost PRIVATE Source)
+    target_compile_definitions(TetradWindowCost PRIVATE
+        JucePlugin_Name="Tetrad"
+        JucePlugin_VersionString="${PROJECT_VERSION}"
+        JUCE_MODAL_LOOPS_PERMITTED=1
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
+    target_link_libraries(TetradWindowCost
+        PRIVATE tetrad_engine juce::juce_audio_processors juce::juce_gui_basics
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()
