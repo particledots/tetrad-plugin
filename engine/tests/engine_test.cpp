@@ -14,7 +14,10 @@
 //   - the same movement at 44.1, 48 and 96 kHz, and the same MIDI at every block size;
 //   - the CC rules from Strange Drift 0.1.1 (6 ms, 0.2% or 100 ms, coarse before fine), the rect CC and notes (20 ms,
 //     merging, never left hanging), the output switches;
-//   - the CPU use and the MIDI rate, against a ceiling worked out from the send rule.
+//   - Tetrad Ex: off (or on at its defaults) changes nothing; the levels, each channel's own wave, fold, wave switching
+//     and width; every shape source; width modulation never makes more than one rise per 48 ms; every Ex setting
+//     with every routing stays finite and inside -1..+1;
+//   - the CPU use and the MIDI rate, against a ceiling worked out from the send rule (Ex off and Ex on).
 
 #include "tetrad/Engine.h"
 
@@ -681,6 +684,180 @@ int main()
         expect (back, "switched back on, it is sent again at once");
     }
 
+    // ---- Tetrad Ex --------------------------------------------------------------------------------------------------
+    {
+        // Off, or on at its defaults, changes nothing: the same MIDI as 0.1.0, sample for sample.
+        auto stream = [] (const Settings& s)
+        {
+            Engine e; e.prepare (48000.0); e.setSeed (9); e.setSettings (s);
+            std::vector<Msg> out;
+            run (e, 48000.0, 6.0, 0, &out, nullptr, nullptr, { { 9000, 0.6 } }, { 30000, 100000 });
+            return out;
+        };
+        Settings base; base.mode = (int) Mode::phase; base.asgnWave = (int) Wave::smoothRandom; base.rectOut = (int) RectOut::both;
+        base.slider[0] = sliderForHz (2.2); base.modFrom[1] = 6; base.modDepth[1] = 0.5; base.resetFrom[2] = 1; base.resetFrom[3] = 2;
+        const auto plain = stream (base);
+        Settings offButSet = base;
+        for (int ch = 0; ch < 4; ++ch) { offButSet.sineLevel[ch] = 0.2; offButSet.asgnLevel[ch] = 0.3; offButSet.exWave[ch] = 2; offButSet.shapeAmount[ch] = 0.9; offButSet.shapeFrom[ch] = 3; offButSet.shapeTarget[ch] = ch % 3; }
+        Settings onDefaults = base; onDefaults.exOn = true;
+        expect (stream (offButSet) == plain && plain.size() > 2000, "Ex off: its settings change nothing (the same MIDI as 0.1.0)");
+        expect (stream (onDefaults) == plain, "Ex on at its defaults (levels 100%, wave Main, shape 0): the same MIDI as with Ex off");
+    }
+    {
+        // Levels and each channel's own wave.
+        Settings s; s.exOn = true; s.asgnWave = (int) Wave::triangle;
+        for (int ch = 0; ch < 4; ++ch) s.slider[ch] = sliderForHz (0.7 + 0.9 * ch);
+        s.sineLevel[0] = 0.5; s.asgnLevel[1] = 0.25; s.sineLevel[2] = 0.0; s.exWave[3] = 1 + (int) Wave::sawUp; s.exWave[2] = 0;
+        Engine e; e.prepare (sr); e.setSettings (s);
+        bool levels = true, waves = true;
+        run (e, sr, 3.0, 32, nullptr, [&] (Engine& x)
+        {
+            for (int ch = 0; ch < 4; ++ch)
+            {
+                const double ph = x.phase (ch);
+                levels = levels && std::fabs (x.sine (ch) - s.sineLevel[ch] * sineWave (ph)) < 1e-12;
+                const double want = ch == 3 ? sawUpWave (ph) : triangleWave (ph);
+                waves = waves && std::fabs (x.asgn (ch) - s.asgnLevel[ch] * want) < 1e-12 && x.waveUsed (ch) == (ch == 3 ? (int) Wave::sawUp : (int) Wave::triangle);
+            }
+        });
+        expect (levels, "Ex: sine level scales the sine (50% on A, 0% on C)");
+        expect (waves, "Ex: a channel's own asgn wave (D on saw up), Main follows the global wave, asgn level scales it");
+
+        // The levels reach the other channels too: "mod from" reads the output as sent (as a patch cable would).
+        Settings m; m.exOn = true; m.slider[0] = sliderForHz (1.0); m.slider[1] = sliderForHz (1.0); m.modFrom[1] = 2; m.modDepth[1] = 1.0;
+        m.sineLevel[0] = 0.0;
+        Engine f; f.prepare (sr); f.setSettings (m);
+        run (f, sr, 2.0, 512);
+        expect (std::fabs (f.hz (1) - 1.0) < 1e-9, "Ex: a channel modulated by a sine set to 0% stays still in speed");
+    }
+    {
+        // Fold, wave switching and width, from the shape amount alone (shape from Off).
+        Settings s; s.exOn = true; s.slider[0] = sliderForHz (1.3); s.slider[1] = sliderForHz (1.3); s.slider[2] = sliderForHz (1.3); s.slider[3] = sliderForHz (1.3);
+        s.shapeTarget[0] = (int) ShapeTarget::fold;  s.shapeAmount[0] = 1.0;
+        s.shapeTarget[1] = (int) ShapeTarget::wave;  s.shapeAmount[1] = 0.4;    // two places along: triangle -> saw up
+        s.shapeTarget[2] = (int) ShapeTarget::width; s.shapeAmount[2] = -1.0;   // 5% high
+        s.shapeTarget[3] = (int) ShapeTarget::width; s.shapeAmount[3] = 0.6;    // 77% high
+        Engine e; e.prepare (sr); e.setSettings (s);
+        bool fold = true, inside = true, wave = true; long high2 = 0, high3 = 0, n = 0; double lo = 9, hi = -9; int turns = 0; double prev = 0, prevDir = 0;
+        run (e, sr, 10.0, 32, nullptr, [&] (Engine& x)
+        {
+            const double v = x.sine (0);
+            fold = fold && std::fabs (v - foldWave (sineWave (x.phase (0)), kMaxFold)) < 1e-12;
+            inside = inside && std::fabs (v) <= 1.0;
+            lo = std::min (lo, v); hi = std::max (hi, v);
+            const double dir = v - prev; if (dir * prevDir < 0) ++turns; if (dir != 0) prevDir = dir; prev = v;
+            wave = wave && x.waveUsed (1) == (int) Wave::sawUp && std::fabs (x.asgn (1) - sawUpWave (x.phase (1))) < 1e-12;
+            high2 += x.rect (2); high3 += x.rect (3); ++n;
+        });
+        expect (fold && inside && lo < -0.99 && hi > 0.99, "Ex fold: the sine folded 5 times as far, still exactly within -1..+1");
+        expect (turns > 13 * 6, "Ex fold: the folded sine turns many times per cycle (" + std::to_string (turns) + " turns in 13 cycles)");
+        expect (std::fabs (foldWave (0.3, 1.0) - 0.3) < 1e-12 && std::fabs (foldWave (0.6, 2.0) - 0.8) < 1e-12 && std::fabs (foldWave (1.0, 3.0) + 1.0) < 1e-12,
+                "Ex fold: gain 1 changes nothing; 0.6 at gain 2 folds back to 0.8; 1 at gain 3 folds to -1");
+        expect (wave, "Ex wave: shape 40% steps the triangle two places, to saw up");
+        expect (std::fabs ((double) high2 / n - 0.05) < 0.01 && std::fabs ((double) high3 / n - 0.77) < 0.01 && std::fabs (e.duty (2) - 0.05) < 1e-12,
+                "Ex width: the rect high for 5% and 77% of the cycle (" + num (100.0 * high2 / n, 1) + "%, " + num (100.0 * high3 / n, 1) + "%)");
+        bool steps = true;
+        for (int k = -10; k <= 10; ++k)
+        {
+            Settings w; w.exOn = true; w.asgnWave = (int) Wave::trapezoid; w.shapeTarget[0] = (int) ShapeTarget::wave; w.shapeAmount[0] = k / 10.0;
+            Engine g; g.setSettings (w); run (g, sr, 0.01, 32);
+            const int want = (((int) Wave::trapezoid + (int) std::lround (k / 10.0 * kWaveSteps)) % 6 + 6) % 6;
+            steps = steps && g.waveUsed (0) == want;
+        }
+        expect (steps, "Ex wave: the shape steps through the six waves both ways, wrapping round");
+    }
+    {
+        // Every shape source: Off (the amount), the mod wheel, the other channels' sine and asgn.
+        bool ok = true; std::string firstBad;
+        for (int ch = 0; ch < 4; ++ch)
+            for (int from = 0; from < kNumShapeSources; ++from)
+            {
+                Settings s; s.exOn = true; s.asgnWave = (int) Wave::sawDown;
+                for (int k = 0; k < 4; ++k) s.slider[k] = sliderForHz (0.9 + 0.37 * k);
+                s.shapeFrom[ch] = from; s.shapeAmount[ch] = -0.8; s.shapeTarget[ch] = (int) ShapeTarget::fold;
+                Engine e; e.prepare (sr); e.setSettings (s);
+                std::array<double, 4> sBefore {}, aBefore {};
+                double wheel = 0.25; bool good = true; int moved = 0; double last = 99;
+                run (e, sr, 2.0, 32, nullptr, [&] (Engine& x)
+                {
+                    double want = -0.8;
+                    if (from == 1) want *= wheel;
+                    else if (from >= 2) { const int o = otherChannel (ch, (from - 2) / 2); want *= (from - 2) % 2 == 0 ? sBefore[(size_t) o] : aBefore[(size_t) o]; }
+                    good = good && std::fabs (x.shape (ch) - want) < 1e-12;
+                    if (x.shape (ch) != last) ++moved;
+                    last = x.shape (ch);
+                    for (int k = 0; k < 4; ++k) { sBefore[(size_t) k] = x.sine (k); aBefore[(size_t) k] = x.asgn (k); }
+                    wheel = x.samplesDone() >= 24000 ? 0.9 : 0.25;
+                }, nullptr, { { 0, 0.25 }, { 24000, 0.9 } });
+                good = good && (from == 0 ? moved == 1 : moved > 1);
+                if (! good && firstBad.empty()) firstBad = "channel " + std::to_string (ch) + " from " + std::to_string (from);
+                ok = ok && good;
+            }
+        expect (ok, "Ex shape from: Off is the amount; the mod wheel and the other channels' sine and asgn (one tick earlier) times the amount" + (firstBad.empty() ? std::string() : " (first wrong: " + firstBad + ")"));
+    }
+    {
+        // Width modulated fast: at most one rise per 48 ms, so edges, notes and resets never multiply.
+        Settings s; s.exOn = true; s.rectOut = (int) RectOut::both;
+        s.slider[0] = sliderForHz (0.3); s.slider[1] = 1.0; s.slider[2] = 1.0; s.slider[3] = sliderForHz (17.0);
+        s.shapeTarget[0] = (int) ShapeTarget::width; s.shapeFrom[0] = 2; s.shapeAmount[0] = 1.0;   // A's width from B's sine at 20 Hz
+        s.shapeTarget[3] = (int) ShapeTarget::width; s.shapeFrom[3] = 3; s.shapeAmount[3] = -1.0;  // D's from A's asgn
+        s.resetFrom[2] = 2;                                                                         // C reset by A's rect
+        Engine e; e.prepare (sr); e.setSettings (s);
+        std::vector<Msg> out;
+        int64_t lastRise[4] = { -1000000, -1000000, -1000000, -1000000 }; bool before[4] = {}; int64_t shortest = 1000000; long rises = 0;
+        run (e, sr, 20.0, 0, &out, [&] (Engine&) {});
+        // Count the rect CC rises of A and D from the stream itself.
+        for (auto& m : out)
+            if (! m.isNote && (m.number == 91 || m.number == 94))
+            {
+                const int k = m.number - 91;
+                if (m.value == 127 && ! before[k]) { if (lastRise[k] > -1000000) shortest = std::min<int64_t> (shortest, (int64_t) m.sample - lastRise[k]); lastRise[k] = (int64_t) m.sample; ++rises; }
+                before[k] = m.value == 127;
+            }
+        expect (shortest >= (int64_t) (kRectRiseGapSeconds * sr) - 32 && rises > 100,
+                "Ex width modulated at 20 Hz: never two rises closer than 48 ms (shortest " + num (shortest / sr * 1000.0, 1) + " ms, " + std::to_string (rises) + " rises)");
+        expect (e.resetsDone (2) <= (uint64_t) (20.0 / kRectRiseGapSeconds) + 1, "Ex width: resets from a shaped rect are limited the same way (" + std::to_string (e.resetsDone (2)) + " in 20 s)");
+    }
+    {
+        // Every Ex setting with random routing, in every mode: finite, inside -1..+1, never faster than 20 Hz.
+        std::mt19937 rng (77);
+        std::uniform_real_distribution<double> u (0.0, 1.0);
+        int bad = 0, tooFast = 0; long runs = 0;
+        for (int mode = 0; mode < kNumModes; ++mode)
+            for (int target = 0; target < kNumShapeTargets; ++target)
+                for (int from = 0; from < kNumShapeSources; ++from)
+                    for (int wave = 0; wave < kNumExWaves; ++wave)
+                    {
+                        ++runs;
+                        Settings s; s.mode = mode; s.exOn = true; s.asgnWave = (int) (u (rng) * 6) % 6; s.rectOut = (int) (u (rng) * 3) % 3;
+                        for (int k = 0; k < 4; ++k)
+                        {
+                            s.slider[k] = u (rng); s.modFrom[k] = (int) (u (rng) * 8) % 8; s.modDepth[k] = u (rng) * 2 - 1;
+                            s.resetFrom[k] = u (rng) < 0.6 ? 0 : (int) (u (rng) * 5) % 5;
+                            s.sineLevel[k] = u (rng); s.asgnLevel[k] = u (rng); s.exWave[k] = (int) (u (rng) * 7) % 7;
+                            s.shapeAmount[k] = u (rng) * 2 - 1; s.shapeFrom[k] = (int) (u (rng) * 8) % 8; s.shapeTarget[k] = (int) (u (rng) * 3) % 3;
+                        }
+                        const int ch = (int) (u (rng) * 4) % 4;
+                        s.shapeTarget[ch] = target; s.shapeFrom[ch] = from; s.exWave[ch] = wave; s.shapeAmount[ch] = u (rng) < 0.5 ? 1.0 : -1.0;
+                        Engine e; e.prepare (sr); e.setSeed ((uint32_t) runs); e.setSettings (s);
+                        std::array<double, 4> prev {};
+                        for (int k = 0; k < 4; ++k) prev[(size_t) k] = e.position (k);
+                        run (e, sr, 2.0, 32, nullptr, [&] (Engine& x)
+                        {
+                            for (int k = 0; k < 4; ++k)
+                            {
+                                const double sv = x.sine (k), av = x.asgn (k), sh = x.shape (k);
+                                if (! std::isfinite (sv) || ! std::isfinite (av) || std::fabs (sv) > 1.0 || std::fabs (av) > 1.0 || std::fabs (sh) > 1.0
+                                    || x.duty (k) < 0.05 - 1e-12 || x.duty (k) > 0.95 + 1e-12) ++bad;
+                                if (! x.jumpedLastTick (k) && std::fabs (x.position (k) - prev[(size_t) k]) > maxStep (sr) * (1.0 + 1e-9)) ++tooFast;
+                                prev[(size_t) k] = x.position (k);
+                            }
+                        }, nullptr, { { 0, 0.8 } }, { 20000, 50000, 80000 });
+                    }
+        expect (bad == 0, "Ex with every target, shape source and wave, random routing, every mode: always finite, inside -1..+1, width 5-95% (" + std::to_string (runs) + " runs)");
+        expect (tooFast == 0, "Ex: never faster than 20 Hz (" + std::to_string (tooFast) + " ticks too fast)");
+    }
+
     // ---- The MIDI rate and the CPU ---------------------------------------------------------------------------------------------
     {
         // The ceiling, from the send rule: each 14-bit output at most once every 6 ms, coarse and fine (2 messages);
@@ -709,11 +886,28 @@ int main()
         for (long k = 0; k < (long) (120.0 * sr / 512); ++k) g.render (512, nullptr, 0, ss);
         const double rateSlow = (double) ss.count / 120.0;
 
-        std::printf ("MIDI: %.0f messages a second at the top rate with all 12 outputs on (ceiling %.0f from the send rule; Ogdoad with Ex on: about 4,600); %.0f at the defaults; %.0f with all four at 0.05 Hz\n",
-                     rate, ceiling, rateDefault, rateSlow);
+        // Ex on, everything shaped hard: folds, wave switching, width from fast channels, at the top rate and slow.
+        auto exRate = [&] (double hz)
+        {
+            Settings x; x.rectOut = (int) RectOut::both; x.exOn = true; x.asgnWave = (int) Wave::smoothRandom;
+            for (int ch = 0; ch < 4; ++ch)
+            {
+                x.slider[ch] = sliderForHz (hz * (1.0 - 0.01 * ch));
+                x.shapeAmount[ch] = 1.0; x.shapeFrom[ch] = 2 + (ch % 2); x.shapeTarget[ch] = ch % 3; x.exWave[ch] = 1 + ch;
+            }
+            Engine h; h.prepare (sr); h.setSettings (x);
+            RecordSink xs;
+            for (long k = 0; k < (long) (60.0 * sr / 512); ++k) h.render (512, nullptr, 0, xs);
+            return (double) xs.count / 60.0;
+        };
+        const double rateEx = exRate (20.0), rateExSlow = exRate (0.05);
+
+        std::printf ("MIDI: %.0f messages a second at the top rate with all 12 outputs on (ceiling %.0f from the send rule; Ogdoad with Ex on: about 4,600); %.0f at the defaults; %.0f with all four at 0.05 Hz; Ex on, everything shaped: %.0f at the top rate, %.0f at 0.05 Hz\n",
+                     rate, ceiling, rateDefault, rateSlow, rateEx, rateExSlow);
         std::printf ("CPU: %.4f%% of one core\n", cpu);
         expect (rate <= ceiling && rate < 4600.0, "MIDI rate at the top rate within the ceiling from the send rule (" + num (rate, 0) + " <= " + num (ceiling, 0) + ")");
         expect (rateSlow < rate / 3.0, "slow LFOs send far fewer messages (" + num (rateSlow, 0) + ")");
+        expect (rateEx <= ceiling && rateExSlow <= ceiling, "Ex on, everything shaped hard: still within the ceiling (" + num (rateEx, 0) + " and " + num (rateExSlow, 0) + ")");
         expect (cpu < 1.0, "CPU under 1% of one core (" + num (cpu, 4) + "%)");
     }
 

@@ -16,7 +16,7 @@
 // sound controllers 1-4 at 70-73; effect depths 91-94). That is safe: the Tetrad Mapper stops them before the instrument, and none of those plugins listens to them.
 // Avoided on purpose: bank select (0, 32), mod wheel (1, 33), data entry (6, 38), volume (7), pan (10), expression
 // (11), sustain (64), data increment / RPN / NRPN (96-101), channel mode messages (120-127).
-// Kept free for Tetrad Ex if it ever needs them: CC 65, 74, 84, 95.
+// Kept free: CC 65, 74, 84, 95 (reserved for Tetrad Ex; Ex turned out to need no outputs of its own, so they stay unused).
 // The rect notes stay outside notes 36-48 (Ogdoad 36-39, Hillside 40-44, Bryn 45-47, particlehold 48).
 
 #pragma once
@@ -80,4 +80,20 @@ namespace tetrad
     inline constexpr double kModOctaves = 5.0;              // free mode, and channel A in every mode: +-5 octaves
     inline constexpr double kModCycles = 2.5;               // phase mode, B-D: +-2.5 cycles of phase shift
     inline constexpr double kModSteps = 7.0;                // divide / multiply ratios and note lengths: +-7 steps (+-15 for lengths)
+
+    // ---- Tetrad Ex (milestone 2; menus in fixed order from 0.2.0) ----------------------------------------------------
+    // Per channel: sine level, asgn level (0..1, as the expander's output attenuators), the channel's own asgn wave
+    // ("Main" follows the global wave), and one shape: an amount (-1..+1), where it comes from, and what it shapes.
+    // Shape from: the same menu as Mod from (Off, Mod wheel, then the other three channels' sine and asgn). Off: the
+    // amount itself is the shape. Otherwise the shape is the amount times that source.
+    inline constexpr int kNumExWaves = 7;                   // Main, then the six waves in the Wave order
+    enum class ShapeTarget : int { fold = 0, wave, width };  // fold the sine, switch the asgn wave, the rect's width
+    inline constexpr int kNumShapeTargets = 3;
+    inline constexpr int kNumShapeSources = kNumModSources;
+    inline constexpr double kMaxFold = 5.0;                 // full shape folds the sine 5 times as far (amplitude stays +-1)
+    inline constexpr int kWaveSteps = 5;                    // full shape steps the asgn wave 5 places along the menu
+    inline constexpr double kWidthRange = 0.45;             // full shape: the rect is high for 5% to 95% of the cycle
+    // A rect whose width is being shaped rises at most once every 48 ms (about 20 times a second, the top rate), so
+    // fast width modulation cannot multiply its edges, notes and resets beyond what an unshaped rect makes.
+    inline constexpr double kRectRiseGapSeconds = 0.048;
 }

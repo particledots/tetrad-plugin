@@ -42,6 +42,14 @@ namespace tetrad
 
     inline bool rectHigh (double phase)       { return phase < 0.5; }
 
+    // Tetrad Ex's fold: the value is pushed `gain` times further and folded back each time it passes +-1 (a triangle
+    // fold), so the amplitude stays +-1 at any gain. Gain 1 leaves the value as it is.
+    inline double foldWave (double x, double gain)
+    {
+        const double t = (x * gain + 1.0) * 0.25;
+        return 1.0 - 4.0 * std::fabs (t - std::floor (t) - 0.5);
+    }
+
     // Random value number k of sequence `stream`, from the seed: evenly spread over -1..+1.
     inline double randomValue (uint32_t seed, int stream, int64_t k)
     {

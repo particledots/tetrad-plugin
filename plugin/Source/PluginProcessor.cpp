@@ -20,7 +20,14 @@ TetradProcessor::TetradProcessor()
         sineOnParam[c]    = apvts.getRawParameterValue (TetradParams::sineOn[ch]);
         asgnOnParam[c]    = apvts.getRawParameterValue (TetradParams::asgnOn[ch]);
         rectOnParam[c]    = apvts.getRawParameterValue (TetradParams::rectOn[ch]);
+        sineLevelParam[c]   = apvts.getRawParameterValue (TetradParams::sineLevel[ch]);
+        asgnLevelParam[c]   = apvts.getRawParameterValue (TetradParams::asgnLevel[ch]);
+        exWaveParam[c]      = apvts.getRawParameterValue (TetradParams::exWave[ch]);
+        shapeAmountParam[c] = apvts.getRawParameterValue (TetradParams::shapeAmount[ch]);
+        shapeFromParam[c]   = apvts.getRawParameterValue (TetradParams::shapeFrom[ch]);
+        shapeTargetParam[c] = apvts.getRawParameterValue (TetradParams::shapeTarget[ch]);
     }
+    exOnParam = apvts.getRawParameterValue (TetradParams::exOn);
     inputs.reserve (4096);
     outBuffer.ensureSize (65536);
 
@@ -60,7 +67,14 @@ void TetradProcessor::readSettings()
         s.sineOn[ch]    = sineOnParam[c]->load() >= 0.5f;
         s.asgnOn[ch]    = asgnOnParam[c]->load() >= 0.5f;
         s.rectOn[ch]    = rectOnParam[c]->load() >= 0.5f;
+        s.sineLevel[ch]   = sineLevelParam[c]->load();
+        s.asgnLevel[ch]   = asgnLevelParam[c]->load();
+        s.exWave[ch]      = juce::roundToInt (exWaveParam[c]->load());
+        s.shapeAmount[ch] = shapeAmountParam[c]->load();
+        s.shapeFrom[ch]   = juce::roundToInt (shapeFromParam[c]->load());
+        s.shapeTarget[ch] = juce::roundToInt (shapeTargetParam[c]->load());
     }
+    s.exOn = exOnParam->load() >= 0.5f;
     engine.setSettings (s);
 }
 
@@ -164,6 +178,7 @@ void TetradProcessor::publishToPanel()
         v.note.store (engine.noteOn (ch));
         v.ratio.store (engine.ratioUsed (ch));
         v.length.store (engine.lengthUsed (ch));
+        v.shape.store ((float) engine.shape (ch));
         // For the mode light, which blinks as a slider crosses 90, 180 or 270 degrees (phase mode) or moves to another
         // ratio (divide, multiply), to help set it, as on the module. Only the slider counts, not "mod from".
         const double x = engine.getSettings().slider[ch];

@@ -47,6 +47,15 @@ namespace tetrad
         bool   sineOn[kNumChannels] { true, true, true, true };
         bool   asgnOn[kNumChannels] { true, true, true, true };
         bool   rectOn[kNumChannels] { true, true, true, true };
+
+        // Tetrad Ex. While exOn is off none of these does anything, and Tetrad moves exactly as 0.1.0 did.
+        bool   exOn = false;
+        double sineLevel[kNumChannels]   { 1.0, 1.0, 1.0, 1.0 };   // 0..1
+        double asgnLevel[kNumChannels]   { 1.0, 1.0, 1.0, 1.0 };   // 0..1
+        int    exWave[kNumChannels]      { 0, 0, 0, 0 };           // 0: Main (the global wave); 1-6: Wave + 1
+        double shapeAmount[kNumChannels] { 0.0, 0.0, 0.0, 0.0 };   // -1..+1
+        int    shapeFrom[kNumChannels]   { 0, 0, 0, 0 };           // see kNumShapeSources
+        int    shapeTarget[kNumChannels] { 0, 0, 0, 0 };           // ShapeTarget
     };
 
     // What Logic says about time, at the first sample of a block.
@@ -110,6 +119,9 @@ namespace tetrad
         uint64_t ticksDone() const                   { return ticks; }
         bool   jumpedLastTick (int ch) const         { return jumped[(std::size_t) ch]; }  // a reset, ratio or mode change moved it at once
         bool   locked() const                        { return wasLocked; }
+        double shape (int ch) const                  { return shapeNow[(std::size_t) ch]; }      // Tetrad Ex: -1..+1, 0 while Ex is off
+        double duty (int ch) const                   { return dutyNow[(std::size_t) ch]; }       // the rect's width, 0.5 unless shaped
+        int    waveUsed (int ch) const               { return waveNow[(std::size_t) ch]; }       // the asgn wave the channel plays
         bool   tempoMissing() const                  { return settings.tempoFollow && ! host.hasTempo; }
 
         // The Waves view: point k (0 = oldest) of channel ch's sine (which 0) or asgn (which 1).
@@ -130,6 +142,8 @@ namespace tetrad
         double modSource (int ch) const;
         bool resetRequested (int ch) const;
         double randomFor (int ch, int64_t k) const;
+        double asgnValue (int ch, int wave, double p, double ph) const;
+        double shapeValue (int ch, const std::array<double, kNumChannels>& sineBefore, const std::array<double, kNumChannels>& asgnBefore) const;
         void computeOutputs();
         void send (int offset, double dt, CcSink& sink);
         void recordTrace();
@@ -141,6 +155,7 @@ namespace tetrad
         uint64_t samples = 0, ticks = 0;
         int samplesToTick = 0;
         int noteTicks = 30;
+        int riseGapTicks = 72;
         double modWheel = 0.0;
         bool noteResetPending = false;
 
@@ -157,6 +172,9 @@ namespace tetrad
         std::array<int, kNumChannels> rectSent {};          // -1 not sent yet, 0 or 127
         std::array<bool, kNumSmooth> laneWasOn {};
         std::array<uint64_t, kNumChannels> resets {};
+        std::array<double, kNumChannels> shapeNow {}, dutyNow { 0.5, 0.5, 0.5, 0.5 };
+        std::array<int, kNumChannels> waveNow {};
+        std::array<int64_t, kNumChannels> lastRiseTick { -1000000, -1000000, -1000000, -1000000 };
         struct Note { bool on = false; int ticksLeft = 0; uint64_t count = 0; };
         std::array<Note, kNumChannels> notes {};
 

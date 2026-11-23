@@ -59,6 +59,22 @@ namespace TetradParams
             layout.add (std::make_unique<AudioParameterBool> (ParameterID { asgnOn[ch], v }, c + " asgn on", true));
             layout.add (std::make_unique<AudioParameterBool> (ParameterID { rectOn[ch], v }, c + " rect on", true));
         }
+
+        // Tetrad Ex (0.2.0).
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { exOn, v }, "Ex on", false));
+        for (int ch = 0; ch < 4; ++ch)
+        {
+            const String c = channelLetter[ch];
+            layout.add (std::make_unique<AudioParameterFloat> (ParameterID { sineLevel[ch], v }, c + " sine level", NormalisableRange<float> (0.0f, 1.0f),
+                1.0f, AudioParameterFloatAttributes().withStringFromValueFunction (plain)));
+            layout.add (std::make_unique<AudioParameterFloat> (ParameterID { asgnLevel[ch], v }, c + " asgn level", NormalisableRange<float> (0.0f, 1.0f),
+                1.0f, AudioParameterFloatAttributes().withStringFromValueFunction (plain)));
+            layout.add (std::make_unique<AudioParameterChoice> (ParameterID { exWave[ch], v }, c + " Ex wave", exWaveNames, 0));
+            layout.add (std::make_unique<AudioParameterFloat> (ParameterID { shapeAmount[ch], v }, c + " shape amount", NormalisableRange<float> (-1.0f, 1.0f),
+                0.0f, AudioParameterFloatAttributes().withStringFromValueFunction (percent)));
+            layout.add (std::make_unique<AudioParameterChoice> (ParameterID { shapeFrom[ch], v }, c + " shape from", modFromNames (ch), 0));
+            layout.add (std::make_unique<AudioParameterChoice> (ParameterID { shapeTarget[ch], v }, c + " shape target", shapeTargetNames, 0));
+        }
         return layout;
     }
 }

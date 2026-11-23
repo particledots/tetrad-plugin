@@ -2,12 +2,21 @@
 #include "Parameters.h"
 
 #include <cmath>
+#include <map>
 
 using namespace TetradStyle;
 
 namespace
 {
-    juce::Font font (float size) { return juce::Font (juce::FontOptions (size)); }
+    // Fonts are made once per size and kept (only the message thread draws).
+    const juce::Font& font (float size)
+    {
+        static std::map<int, juce::Font> made;
+        const int key = juce::roundToInt (size * 10.0f);
+        auto it = made.find (key);
+        if (it == made.end()) it = made.emplace (key, juce::Font (juce::FontOptions (size))).first;
+        return it->second;
+    }
     juce::String utf8 (const char* s) { return juce::String::fromUTF8 (s); }
 
     void textAt (juce::Graphics& g, const juce::String& s, float x, float baseline, float size, juce::Colour c,
@@ -177,9 +186,59 @@ void Choices::paint (juce::Graphics& g)
 // ================================================================================================
 LightsLayer::LightsLayer (TetradProcessor& p) : proc (p)
 {
+    auto set = [this] (int kind, float core, std::initializer_list<float> halos, std::initializer_list<float> alphas)
+    {
+        auto& sp = sprites[(size_t) kind];
+        sp.core = core;
+        int k = 0; for (float h : halos) sp.halos[k++] = h;
+        k = 0; for (float a : alphas) sp.alphas[k++] = a;
+    };
+    set (bigLight, 11.0f, { 26.0f, 20.0f, 14.0f }, { 0.10f, 0.20f, 0.40f });
+    set (outLight, 6.0f, { 13.0f, 9.0f, 0.0f }, { 0.15f, 0.30f, 0.0f });
+    set (shapeLight, 4.0f, { 9.0f, 6.0f, 0.0f }, { 0.15f, 0.30f, 0.0f });
     setInterceptsMouseClicks (false, false);
     setOpaque (false);
     startTimerHz (30);
+}
+
+void LightsLayer::drawSprite (juce::Graphics& g, int kind, float cx, float cy, double level)
+{
+    auto& sp = sprites[(size_t) kind];
+    const float scale = juce::jmax (0.25f, g.getInternalContext().getPhysicalPixelScaleFactor());
+    const float reach = juce::jmax (sp.halos[0], sp.core) + 1.0f;                // the picture's half width, panel units
+    if (std::fabs (scale - sp.scale) > 0.001f || sp.glow.isNull())
+    {
+        // Drawn once per window size: the same circles drawLight () makes, at full brightness.
+        sp.scale = scale;
+        const int px = juce::jmax (4, (int) std::ceil (2.0f * reach * scale));
+        auto make = [&] (std::function<void (juce::Graphics&)> paintIt)
+        {
+            juce::Image img (juce::Image::ARGB, px, px, true);
+            juce::Graphics sg (img);
+            sg.addTransform (juce::AffineTransform::scale (scale));
+            paintIt (sg);
+            return img;
+        };
+        sp.glow = make ([&] (juce::Graphics& sg)
+        {
+            for (int k = 0; k < 3; ++k)
+                if (sp.halos[k] > 0.0f)
+                {
+                    sg.setColour (amber.withAlpha (sp.alphas[k]));
+                    sg.fillEllipse (reach - sp.halos[k], reach - sp.halos[k], 2.0f * sp.halos[k], 2.0f * sp.halos[k]);
+                }
+        });
+        sp.base = make ([&] (juce::Graphics& sg) { sg.setColour (knobFill); sg.fillEllipse (reach - sp.core, reach - sp.core, 2.0f * sp.core, 2.0f * sp.core); });
+        sp.lit  = make ([&] (juce::Graphics& sg) { sg.setColour (amber);    sg.fillEllipse (reach - sp.core, reach - sp.core, 2.0f * sp.core, 2.0f * sp.core); });
+    }
+    const auto place = juce::AffineTransform::scale (1.0f / scale).translated (cx - reach, cy - reach);
+    const float lv = (float) juce::jlimit (0.0, 1.0, level);
+    if (lv > 0.0f) { g.setOpacity (lv); g.drawImageTransformed (sp.glow, place); }
+    g.setOpacity (1.0f);
+    g.drawImageTransformed (sp.base, place);
+    g.setOpacity (lightAlpha (lv));
+    g.drawImageTransformed (sp.lit, place);
+    g.setOpacity (1.0f);
 }
 
 juce::String LightsLayer::readout (int ch, juce::String& under) const
@@ -216,13 +275,20 @@ juce::String LightsLayer::readout (int ch, juce::String& under) const
 
 void LightsLayer::timerCallback()
 {
+    update();
+}
+
+void LightsLayer::update()
+{
     if (waves) proc.copyTraces (traces);
 
     auto& vts = proc.getValueTreeState();
     const int mode = juce::roundToInt (vts.getRawParameterValue (TetradParams::mode)->load());
     const bool missing = proc.tempoMissing.load() && vts.getRawParameterValue (TetradParams::tempoFollow)->load() >= 0.5f;
+    const bool exOn = vts.getRawParameterValue (TetradParams::exOn)->load() >= 0.5f;
     const bool all = firstFrame || waves != drawnWaves;
-    auto draw = [this] (juce::Rectangle<int> r) { repaint (r); areaDrawn += (double) r.getWidth() * r.getHeight(); };
+    lastFrameAreas.clear();
+    auto draw = [this] (juce::Rectangle<int> r) { repaint (r); lastFrameAreas.add (r); areaDrawn += (double) r.getWidth() * r.getHeight(); };
 
     // The mode light blinks at each 90 degrees crossed in phase mode and at each ratio change in divide / multiply.
     const double now = juce::Time::getMillisecondCounterHiRes();
@@ -241,20 +307,24 @@ void LightsLayer::timerCallback()
     for (int ch = 0; ch < 4; ++ch)
     {
         const auto& v = proc.view[(size_t) ch];
-        const int light = juce::roundToInt ((v.sine.load() + 1.0f) * 75.0f);
+        const int light = TetradStyle::lightStep ((v.sine.load() + 1.0) * 0.5);
         if (all || waves || light != drawnLight[(size_t) ch]) draw (lightArea (ch));
         drawnLight[(size_t) ch] = light;
 
         const bool on[3] = { vts.getRawParameterValue (TetradParams::sineOn[ch])->load() >= 0.5f,
                              vts.getRawParameterValue (TetradParams::asgnOn[ch])->load() >= 0.5f,
                              vts.getRawParameterValue (TetradParams::rectOn[ch])->load() >= 0.5f };
-        const int level[3] = { juce::roundToInt ((v.sine.load() + 1.0f) * 75.0f), juce::roundToInt ((v.asgn.load() + 1.0f) * 75.0f), v.rect.load() ? 150 : 0 };
+        const int level[3] = { light, TetradStyle::lightStep ((v.asgn.load() + 1.0) * 0.5), v.rect.load() ? 64 : 0 };
         for (int w = 0; w < 3; ++w)
         {
             const int code = on[w] ? level[w] : -1;
             if (all || code != drawnOut[(size_t) ch][(size_t) w]) draw (outArea (ch, w));
             drawnOut[(size_t) ch][(size_t) w] = code;
         }
+
+        const int shape = exOn ? TetradStyle::lightStep (std::fabs (v.shape.load())) : -1;
+        if (all || shape != drawnShape[(size_t) ch]) draw (shapeLightArea (ch));
+        drawnShape[(size_t) ch] = shape;
 
         juce::String under;
         const auto r = readout (ch, under) + "|" + under;
@@ -269,67 +339,76 @@ void LightsLayer::timerCallback()
 void LightsLayer::paint (juce::Graphics& g)
 {
     auto& vts = proc.getValueTreeState();
-    const int mode = juce::roundToInt (vts.getRawParameterValue (TetradParams::mode)->load());
+    auto needed = [&g] (juce::Rectangle<int> r) { return drawLikeVersion010 || g.clipRegionIntersects (r); };   // only what is being redrawn
 
     // The mode light.
+    if (needed (modeLightArea()))
     {
         const bool blink = juce::Time::getMillisecondCounterHiRes() < blinkUntil;
         const float halos[3] = { 9.0f, 0.0f, 0.0f }, alpha[3] = { 0.18f, 0.0f, 0.0f };
         drawLight (g, 128.0f, 70.0f, 5.0f, halos, alpha, blink ? 0.05 : 1.0);
-        (void) mode;
     }
-    if (proc.tempoMissing.load() && vts.getRawParameterValue (TetradParams::tempoFollow)->load() >= 0.5f)
+    if (needed (tempoNoteArea()) && proc.tempoMissing.load() && vts.getRawParameterValue (TetradParams::tempoFollow)->load() >= 0.5f)
         textAt (g, "no tempo", 134.0f, 298.0f, 11.0f, amber, juce::Justification::centredRight, 80.0f);
 
+    const bool exOn = vts.getRawParameterValue (TetradParams::exOn)->load() >= 0.5f;
     for (int ch = 0; ch < 4; ++ch)
     {
         const auto& v = proc.view[(size_t) ch];
         const float cx = (float) colCentre (ch);
 
-        if (waves)
+        if (needed (lightArea (ch)))
         {
-            const auto box = lightArea (ch).toFloat().reduced (4.0f, 2.0f);
-            g.setColour (track);
-            g.fillRoundedRectangle (box, 4.0f);
-            g.setColour (line);
-            g.fillRect (box.getX() + 3.0f, box.getCentreY() - 0.3f, box.getWidth() - 6.0f, 0.6f);
-            for (int which = 1; which >= 0; --which)
+            if (waves)
             {
-                juce::Path p;
-                const int n = tetrad::Engine::kTracePoints;
-                for (int k = 0; k < n; ++k)
+                const auto box = lightArea (ch).toFloat().reduced (4.0f, 2.0f);
+                g.setColour (track);
+                g.fillRoundedRectangle (box, 4.0f);
+                g.setColour (line);
+                g.fillRect (box.getX() + 3.0f, box.getCentreY() - 0.3f, box.getWidth() - 6.0f, 0.6f);
+                for (int which = 1; which >= 0; --which)
                 {
-                    const float x = box.getX() + 3.0f + (box.getWidth() - 6.0f) * (float) k / (float) (n - 1);
-                    const float y = box.getCentreY() - (box.getHeight() * 0.5f - 4.0f) * traces[(size_t) ch][(size_t) (k * 2 + which)];
-                    if (k == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
+                    juce::Path p;
+                    const int n = tetrad::Engine::kTracePoints;
+                    for (int k = 0; k < n; ++k)
+                    {
+                        const float x = box.getX() + 3.0f + (box.getWidth() - 6.0f) * (float) k / (float) (n - 1);
+                        const float y = box.getCentreY() - (box.getHeight() * 0.5f - 4.0f) * traces[(size_t) ch][(size_t) (k * 2 + which)];
+                        if (k == 0) p.startNewSubPath (x, y); else p.lineTo (x, y);
+                    }
+                    g.setColour (which == 0 ? amber : soft.withAlpha (0.75f));
+                    g.strokePath (p, juce::PathStrokeType (which == 0 ? 1.4f : 1.1f));
                 }
-                g.setColour (which == 0 ? amber : soft.withAlpha (0.75f));
-                g.strokePath (p, juce::PathStrokeType (which == 0 ? 1.4f : 1.1f));
             }
-        }
-        else
-        {
-            const float halos[3] = { 28.0f, 21.0f, 15.0f }, alpha[3] = { 0.10f, 0.20f, 0.40f };
-            drawLight (g, cx, (float) kLightY, 11.0f, halos, alpha, (v.sine.load() + 1.0) * 0.5);
+            else
+            {
+            {
+                const double lv = lightStep ((v.sine.load() + 1.0) * 0.5) / 64.0;
+                if (drawLikeVersion010) { const float h[3] = { 26.0f, 20.0f, 14.0f }, a[3] = { 0.10f, 0.20f, 0.40f }; drawLight (g, cx, (float) kLightY, 11.0f, h, a, lv); }
+                else drawSprite (g, bigLight, cx, (float) kLightY, lv);
+            }
+            }
         }
 
         // The read-out under the slider.
-        juce::String under;
-        const auto r = readout (ch, under);
-        textAt (g, r, cx, 316.0f, 13.0f, bright, juce::Justification::centred, 98.0f);
-        textAt (g, under, cx, 329.0f, 11.0f, dim, juce::Justification::centred, 98.0f);
+        if (needed (readoutArea (ch)))
+        {
+            juce::String under;
+            const auto r = readout (ch, under);
+            textAt (g, r, cx, 316.0f, 13.0f, bright, juce::Justification::centred, 98.0f);
+            textAt (g, under, cx, 329.0f, 11.0f, dim, juce::Justification::centred, 98.0f);
+        }
 
         // The three output lights: brightness follows the value; a switched-off output shows an empty ring.
-        const double levels[3] = { (v.sine.load() + 1.0) * 0.5, (v.asgn.load() + 1.0) * 0.5, v.rect.load() ? 1.0 : 0.0 };
+        const double levels[3] = { lightStep ((v.sine.load() + 1.0) * 0.5) / 64.0, lightStep ((v.asgn.load() + 1.0) * 0.5) / 64.0, v.rect.load() ? 1.0 : 0.0 };
         for (int w = 0; w < 3; ++w)
         {
+            if (! needed (outArea (ch, w))) continue;
             const bool on = vts.getRawParameterValue (w == 0 ? TetradParams::sineOn[ch] : w == 1 ? TetradParams::asgnOn[ch] : TetradParams::rectOn[ch])->load() >= 0.5f;
             const float x = (float) outX (ch, w), y = (float) kOutY;
-            if (on)
-            {
-                const float halos[3] = { 13.0f, 9.0f, 0.0f }, alpha[3] = { 0.15f, 0.30f, 0.0f };
-                drawLight (g, x, y, 6.0f, halos, alpha, levels[w]);
-            }
+            if (on && drawLikeVersion010) { const float h[3] = { 13.0f, 9.0f, 0.0f }, a[3] = { 0.15f, 0.30f, 0.0f }; drawLight (g, x, y, 6.0f, h, a, levels[w]); }
+            else if (on)
+                drawSprite (g, outLight, x, y, levels[w]);
             else
             {
                 g.setColour (line);
@@ -340,8 +419,18 @@ void LightsLayer::paint (juce::Graphics& g)
                 juce::PathStrokeType (1.2f).createDashedStroke (dashed, ring, dashes, 2);
                 g.fillPath (dashed);
             }
-            textAt (g, on ? juce::String (kOutNames[w]) : juce::String ("off"), x, 495.0f, 11.0f, on ? soft : line, juce::Justification::centred, 30.0f);
-            textAt (g, juce::String (outCc (ch, w)), x, 508.0f, 11.0f, on ? dim : line, juce::Justification::centred, 30.0f);
+            if (drawLikeVersion010)
+            {
+                textAt (g, on ? juce::String (kOutNames[w]) : juce::String ("off"), x, 495.0f, 11.0f, on ? soft : line, juce::Justification::centred, 30.0f);
+                textAt (g, juce::String (outCc (ch, w)), x, 508.0f, 11.0f, on ? dim : line, juce::Justification::centred, 30.0f);
+            }
+        }
+
+        // Tetrad Ex: a small light per channel showing how strongly it is being shaped (only while Ex is on).
+        if (exOn && needed (shapeLightArea (ch)))
+        {
+            const auto c = shapeLightArea (ch).toFloat().getCentre();
+            drawSprite (g, shapeLight, c.x, c.y, lightStep (std::fabs (v.shape.load())) / 64.0);
         }
     }
 }
@@ -373,9 +462,11 @@ TetradPanel::TetradPanel (TetradProcessor& p)
       rectOutChoices ({ { { 24, 358, 34, 24 }, "CC" }, { { 62, 358, 34, 24 }, "note" }, { { 100, 358, 34, 24 }, "both" } }, 11.0f)
 {
     setLookAndFeel (&lnf);
+    setOpaque (true);
     auto& vts = proc.getValueTreeState();
 
-    addAndMakeVisible (lights);                    // first, so the controls sit on top of it
+    addAndMakeVisible (background);                // the picture of everything that never moves
+    addAndMakeVisible (lights);                    // then the lights, so the controls sit on top of them
 
     auto attachChoices = [&] (Choices& c, const char* id) { c.attach (*vts.getParameter (id)); addAndMakeVisible (c); };
     attachChoices (modeChoices, TetradParams::mode);
@@ -387,6 +478,17 @@ TetradPanel::TetradPanel (TetradProcessor& p)
     tempoChoices.setTitle ("Tempo");
     rectOutChoices.setTitle ("Rect out");
 
+    auto setUpKnob = [this] (juce::Slider& k, const char* name, double doubleClickValue)
+    {
+        k.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        k.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
+        k.setRotaryParameters (juce::MathConstants<float>::pi * -0.75f, juce::MathConstants<float>::pi * 0.75f, true);
+        k.setPopupDisplayEnabled (true, true, this);
+        k.setDoubleClickReturnValue (true, doubleClickValue);
+        k.setName (name);
+        addAndMakeVisible (k);
+    };
+
     for (int ch = 0; ch < 4; ++ch)
     {
         const auto c = (size_t) ch;
@@ -397,15 +499,8 @@ TetradPanel::TetradPanel (TetradProcessor& p)
         addAndMakeVisible (s);
         sliderAtt[c] = std::make_unique<SliderAttachment> (vts, TetradParams::slider[ch], s);
 
-        auto& k = depthKnobs[c];
-        k.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
-        k.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
-        k.setRotaryParameters (juce::MathConstants<float>::pi * -0.75f, juce::MathConstants<float>::pi * 0.75f, true);
-        k.setPopupDisplayEnabled (true, true, this);
-        k.setDoubleClickReturnValue (true, 0.0);
-        k.setName ("depth");
-        addAndMakeVisible (k);
-        depthAtt[c] = std::make_unique<SliderAttachment> (vts, TetradParams::modDepth[ch], k);
+        setUpKnob (depthKnobs[c], "depth", 0.0);
+        depthAtt[c] = std::make_unique<SliderAttachment> (vts, TetradParams::modDepth[ch], depthKnobs[c]);
 
         auto& mf = modFromBoxes[c];
         mf.addItemList (TetradParams::modFromNames (ch), 1);
@@ -425,12 +520,50 @@ TetradPanel::TetradPanel (TetradProcessor& p)
             sw.setTitle (TetradParams::channelLetter[ch] + " " + kOutNames[w] + " on");
             addAndMakeVisible (sw);
             outAtt[c][(size_t) w] = std::make_unique<ButtonAttachment> (vts, ids[w], sw);
+            outLookAtt[c][(size_t) w] = std::make_unique<juce::ParameterAttachment> (*vts.getParameter (ids[w]),
+                [this, ch, w] (float v) { background.setOutputOn (ch, w, v >= 0.5f); }, nullptr);
+            outLookAtt[c][(size_t) w]->sendInitialUpdate();
         }
+
+        // Tetrad Ex, channel ch.
+        setUpKnob (sineLevelKnobs[c], "sine level", 1.0);
+        sineLevelAtt[c] = std::make_unique<SliderAttachment> (vts, TetradParams::sineLevel[ch], sineLevelKnobs[c]);
+        setUpKnob (asgnLevelKnobs[c], "asgn level", 1.0);
+        asgnLevelAtt[c] = std::make_unique<SliderAttachment> (vts, TetradParams::asgnLevel[ch], asgnLevelKnobs[c]);
+        setUpKnob (shapeKnobs[c], "shape", 0.0);
+        shapeAtt[c] = std::make_unique<SliderAttachment> (vts, TetradParams::shapeAmount[ch], shapeKnobs[c]);
+
+        auto& wb = exWaveBoxes[c];
+        const char* shortWaves[7] = { "main", "triangle", "saw down", "saw up", "trapezoid", "step rnd", "smooth rnd" };   // room for the Mac's wider font
+        for (int k = 0; k < TetradParams::exWaveNames.size(); ++k)
+            wb.addItem (juce::String ("wave: ") + shortWaves[k], k + 1);
+        addAndMakeVisible (wb);
+        exWaveAtt[c] = std::make_unique<ComboAttachment> (vts, TetradParams::exWave[ch], wb);
+
+        auto& sf = shapeFromBoxes[c];
+        const auto names = TetradParams::modFromNames (ch);
+        for (int k = 0; k < names.size(); ++k)
+            sf.addItem ("from: " + (k < 2 ? names[k].toLowerCase() : names[k]), k + 1);
+        addAndMakeVisible (sf);
+        shapeFromAtt[c] = std::make_unique<ComboAttachment> (vts, TetradParams::shapeFrom[ch], sf);
+
+        const int top = exRowTop (ch);
+        shapeTargetChoices[c] = std::make_unique<Choices> (std::vector<Choices::Item> {
+            { { 778, top + 48, 35, 18 }, "fold" }, { { 815, top + 48, 35, 18 }, "wave" }, { { 852, top + 48, 34, 18 }, "width" } }, 11.0f);
+        shapeTargetChoices[c]->setTitle (TetradParams::channelLetter[ch] + " shape target");
+        attachChoices (*shapeTargetChoices[c], TetradParams::shapeTarget[ch]);
     }
 
     for (int n = 1; n <= 16; ++n) channelBox.addItem ("channel " + juce::String (n), n);
     addAndMakeVisible (channelBox);
     channelAtt = std::make_unique<ComboAttachment> (vts, TetradParams::outChannel, channelBox);
+
+    exSwitch.setTitle ("Tetrad Ex on");
+    exSwitch.setTooltip ("Switch Tetrad Ex on or off");
+    addAndMakeVisible (exSwitch);
+    exSwitchAtt = std::make_unique<ButtonAttachment> (vts, TetradParams::exOn, exSwitch);
+    exLookAtt = std::make_unique<juce::ParameterAttachment> (*vts.getParameter (TetradParams::exOn), [this] (float v) { setExLook (v >= 0.5f); }, nullptr);
+    exLookAtt->sendInitialUpdate();
 
     // Lights | Waves: one or the other; the choice is kept in the saved state.
     viewChoices.onChoose = [this] (int k) { proc.getValueTreeState().state.setProperty (wavesViewProperty, k == 1, nullptr); };
@@ -445,6 +578,20 @@ TetradPanel::~TetradPanel()
 {
     proc.getValueTreeState().state.removeListener (this);
     setLookAndFeel (nullptr);
+}
+
+void TetradPanel::setExLook (bool on)
+{
+    // While Ex is off its controls stay usable (set them up first, then switch on) but are dimmed.
+    background.setExOn (on);
+    const float a = on ? 1.0f : 0.45f;
+    for (int ch = 0; ch < 4; ++ch)
+    {
+        const auto c = (size_t) ch;
+        for (juce::Component* x : { (juce::Component*) &sineLevelKnobs[c], (juce::Component*) &asgnLevelKnobs[c], (juce::Component*) &shapeKnobs[c],
+                                    (juce::Component*) &exWaveBoxes[c], (juce::Component*) &shapeFromBoxes[c], (juce::Component*) shapeTargetChoices[c].get() })
+            x->setAlpha (a);
+    }
 }
 
 void TetradPanel::showView (bool waves)
@@ -482,61 +629,48 @@ std::vector<TetradPanel::ControlInfo> TetradPanel::controls()
         v.push_back ({ &outSwitches[c][1], TetradParams::asgnOn[ch] });
         v.push_back ({ &outSwitches[c][2], TetradParams::rectOn[ch] });
     }
+    v.push_back ({ &exSwitch, TetradParams::exOn });
+    for (int ch = 0; ch < 4; ++ch)
+    {
+        const auto c = (size_t) ch;
+        v.push_back ({ &sineLevelKnobs[c], TetradParams::sineLevel[ch] });
+        v.push_back ({ &asgnLevelKnobs[c], TetradParams::asgnLevel[ch] });
+        v.push_back ({ &exWaveBoxes[c], TetradParams::exWave[ch] });
+        v.push_back ({ &shapeKnobs[c], TetradParams::shapeAmount[ch] });
+        v.push_back ({ &shapeFromBoxes[c], TetradParams::shapeFrom[ch] });
+        v.push_back ({ shapeTargetChoices[c].get(), TetradParams::shapeTarget[ch] });
+    }
     return v;
 }
 
-void TetradPanel::paintEx (juce::Graphics& g)
+// ================================================================================================
+void ExSwitch::paintButton (juce::Graphics& g, bool over, bool)
 {
-    const juce::Rectangle<float> card (608.5f, 62.5f, 291.0f, 447.0f);
-    g.setColour (exFill);
-    g.fillRoundedRectangle (card, 6.0f);
+    const bool on = getToggleState();
+    const auto b = getLocalBounds().toFloat();
     g.setColour (knobFill);
-    g.drawRoundedRectangle (card, 6.0f, 0.8f);
-
-    g.beginTransparencyLayer (0.38f);
-    textAt (g, "Tetrad Ex", 622.0f, 88.0f, 15.0f, bright);
-    g.setColour (knobFill);
-    g.fillRoundedRectangle (846.0f, 72.0f, 40.0f, 20.0f, 10.0f);
-    g.setColour (dim);
-    g.fillEllipse (849.0f, 75.0f, 14.0f, 14.0f);
-    auto knob = [&] (float cx, float cy, float angle, const char* label)
+    g.fillRoundedRectangle (b, b.getHeight() * 0.5f);
+    if (over) { g.setColour (line); g.drawRoundedRectangle (b.reduced (0.5f), b.getHeight() * 0.5f, 0.8f); }
+    const float d = b.getHeight() - 6.0f;
+    const float x = on ? b.getRight() - 3.0f - d : b.getX() + 3.0f;
+    if (on)
     {
-        g.setColour (knobFill);
-        g.fillEllipse (cx - 12.0f, cy - 12.0f, 24.0f, 24.0f);
-        g.setColour (line);
-        g.drawEllipse (cx - 12.0f, cy - 12.0f, 24.0f, 24.0f, 1.0f);
-        g.setColour (bright);
-        g.drawLine (cx, cy, cx + 11.0f * std::sin (angle), cy - 11.0f * std::cos (angle), 1.5f);
-        textAt (g, label, cx, 28.0f + cy, 11.0f, text, juce::Justification::centred, 40.0f);
-    };
-    auto box = [&] (float x, float y, float w, const juce::String& s, bool filled)
-    {
-        g.setColour (filled ? knobFill : panel);
-        g.fillRoundedRectangle (x, y, w, 18.0f, 3.0f);
-        if (! filled) { g.setColour (line); g.drawRoundedRectangle (x, y, w, 18.0f, 3.0f, 0.8f); }
-        g.setColour (text);
-        g.setFont (font (11.0f));
-        g.drawText (s, juce::Rectangle<float> (x + 4.0f, y, w - 6.0f, 18.0f), w > 60.0f ? juce::Justification::centredLeft : juce::Justification::centred, false);
-    };
-    for (int ch = 0; ch < 4; ++ch)
-    {
-        const float top = 100.0f + 96.0f * (float) ch;
-        textAt (g, TetradParams::channelLetter[ch], 624.0f, top + 22.0f, 14.0f, bright);
-        knob (664.0f, top + 26.0f, 0.75f, "sine");
-        knob (706.0f, top + 26.0f, 0.75f, "asgn");
-        knob (748.0f, top + 26.0f, 0.0f, "shape");
-        box (778.0f, top + 4.0f, 108.0f, "wave: main", false);
-        box (778.0f, top + 26.0f, 108.0f, "shape from: off", false);
-        box (778.0f, top + 48.0f, 35.0f, "fold", true);
-        box (815.0f, top + 48.0f, 35.0f, "wave", false);
-        box (852.0f, top + 48.0f, 34.0f, "width", false);
+        g.setColour (amber.withAlpha (0.25f));
+        g.fillEllipse (x - 3.0f, b.getY(), d + 6.0f, d + 6.0f);
     }
-    g.endTransparencyLayer();
-    textAt (g, "until milestone 2", 754.0f, 494.0f, 12.0f, amber, juce::Justification::centred, 160.0f);
+    g.setColour (on ? amber : dim);
+    g.fillEllipse (x, b.getY() + 3.0f, d, d);
 }
 
-void TetradPanel::paint (juce::Graphics& g)
+void PanelBackground::setOutputOn (int ch, int which, bool on)
 {
+    auto& o = outOn[(size_t) ch][(size_t) which];
+    if (o != on) { o = on; repaint (outLabelArea (ch, which)); }
+}
+
+void PanelBackground::paint (juce::Graphics& g)
+{
+    ++timesDrawn;
     g.fillAll (panel);
 
     // Header
@@ -569,9 +703,36 @@ void TetradPanel::paint (juce::Graphics& g)
         textAt (g, "mod from", x + 7.0f, 348.0f, 11.0f, dim);
         textAt (g, "depth", x + 44.0f, 398.0f, 11.0f, dim);
         textAt (g, "reset from", x + 7.0f, 424.0f, 11.0f, dim);
+
+        // Under each output light: its name (or "off") and its CC number.
+        for (int w = 0; w < 3; ++w)
+        {
+            const bool on = outOn[(size_t) ch][(size_t) w];
+            const float ox = (float) outX (ch, w);
+            textAt (g, on ? juce::String (kOutNames[w]) : juce::String ("off"), ox, 495.0f, 11.0f, on ? soft : line, juce::Justification::centred, 30.0f);
+            textAt (g, juce::String (outCc (ch, w)), ox, 508.0f, 11.0f, on ? dim : line, juce::Justification::centred, 30.0f);
+        }
     }
 
-    paintEx (g);
+    // Tetrad Ex: its card and labels (the controls are real components on top). Dimmed while Ex is off.
+    const juce::Rectangle<float> card (608.5f, 62.5f, 291.0f, 447.0f);
+    g.setColour (exFill);
+    g.fillRoundedRectangle (card, 6.0f);
+    g.setColour (knobFill);
+    g.drawRoundedRectangle (card, 6.0f, 0.8f);
+    textAt (g, "Tetrad Ex", 622.0f, 88.0f, 15.0f, exOn ? bright : soft);
+    textAt (g, exOn ? "on" : "off", 840.0f, 86.0f, 11.0f, exOn ? amber : dim, juce::Justification::centredRight, 40.0f);
+    const auto labels = exOn ? text : line;
+    for (int ch = 0; ch < 4; ++ch)
+    {
+        const float top = (float) exRowTop (ch);
+        textAt (g, TetradParams::channelLetter[ch], 624.0f, top + 22.0f, 14.0f, exOn ? bright : dim);
+        const char* names[3] = { "sine", "asgn", "shape" };
+        for (int k = 0; k < 3; ++k)
+            textAt (g, names[k], (float) kExKnobX[k], top + 54.0f, 11.0f, labels, juce::Justification::centred, 40.0f);
+    }
+    textAt (g, utf8 ("shape: fold the sine \xc2\xb7 switch the asgn wave \xc2\xb7 rect width"), 754.0f, 494.0f, 11.0f, exOn ? dim : line,
+            juce::Justification::centred, 280.0f);
 
     // Footer
     g.setColour (line);
@@ -582,6 +743,7 @@ void TetradPanel::paint (juce::Graphics& g)
 
 void TetradPanel::resized()
 {
+    background.setBounds (getLocalBounds());
     lights.setBounds (getLocalBounds());
     for (int ch = 0; ch < 4; ++ch)
     {
@@ -593,8 +755,16 @@ void TetradPanel::resized()
         resetFromBoxes[c].setBounds (x + 7, 428, 90, 20);
         for (int w = 0; w < 3; ++w)
             outSwitches[c][(size_t) w].setBounds (outX (ch, w) - 14, kOutY - 14, 28, 28);
+
+        const int top = exRowTop (ch);
+        sineLevelKnobs[c].setBounds (kExKnobX[0] - 13, top + 13, 26, 26);
+        asgnLevelKnobs[c].setBounds (kExKnobX[1] - 13, top + 13, 26, 26);
+        shapeKnobs[c].setBounds (kExKnobX[2] - 13, top + 13, 26, 26);
+        exWaveBoxes[c].setBounds (778, top + 4, 108, 18);
+        shapeFromBoxes[c].setBounds (778, top + 26, 108, 18);
     }
     channelBox.setBounds (24, 468, 110, 24);
+    exSwitch.setBounds (846, 72, 40, 20);
 }
 
 // ================================================================================================

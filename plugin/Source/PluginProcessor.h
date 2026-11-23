@@ -3,6 +3,9 @@
 // (CC 1) and note-ons are also read (for "mod from" and "reset from"), and Logic's tempo and song position (for
 // following the tempo).
 //
+// Tetrad Ex (0.2.0) adds per-channel levels, the channel's own asgn wave and a shape (fold, wave or width); it sends
+// nothing of its own, so the outputs, their numbers and the mapper stay as in 0.1.0.
+//
 // Saved with the project besides the parameters: the random seed (property "randomSeed"), so the random waves repeat
 // when the project reopens; a new copy of the plugin gets a new seed. Each project opens with every channel at phase 0,
 // like the module switched on.
@@ -58,6 +61,7 @@ public:
         std::atomic<float> sine { 0.0f }, asgn { 0.0f }, hz { 0.0f };
         std::atomic<bool> rect { false }, note { false };
         std::atomic<int> ratio { 1 }, length { 0 }, marker { -1 };   // marker: the slider's phase quarter or ratio, for the mode light
+        std::atomic<float> shape { 0.0f };                             // Tetrad Ex: the channel's shape, -1..+1
     };
     std::array<ChannelView, tetrad::kNumChannels> view {};
     std::atomic<bool> tempoMissing { false };
@@ -95,6 +99,8 @@ private:
     std::atomic<float>* rectOutParam = nullptr;
     std::atomic<float>* outChannelParam = nullptr;
     std::array<std::atomic<float>*, 4> sliderParam {}, modFromParam {}, modDepthParam {}, resetFromParam {}, sineOnParam {}, asgnOnParam {}, rectOnParam {};
+    std::atomic<float>* exOnParam = nullptr;
+    std::array<std::atomic<float>*, 4> sineLevelParam {}, asgnLevelParam {}, exWaveParam {}, shapeAmountParam {}, shapeFromParam {}, shapeTargetParam {};
 
     tetrad::Engine engine;
     std::vector<tetrad::InputEvent> inputs;

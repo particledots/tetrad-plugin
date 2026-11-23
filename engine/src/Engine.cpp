@@ -22,6 +22,8 @@ namespace tetrad
     {
         sampleRate = newSampleRate > 0.0 ? newSampleRate : 48000.0;
         noteTicks = std::max (1, (int) std::lround (kNoteSeconds * sampleRate / kTickSamples));
+        riseGapTicks = std::max (1, (int) std::ceil (kRectRiseGapSeconds * sampleRate / kTickSamples));
+        lastRiseTick.fill (-1000000);
         // The clock restarts; the channels stay where they are. Everything is sent again from the next tick, and a rect
         // note still on is ended there (a plugin cannot send MIDI from here).
         samples = ticks = 0;
@@ -120,34 +122,94 @@ namespace tetrad
         return randomValue (seed, ch, k);
     }
 
+    double Engine::asgnValue (int ch, int wave, double p, double ph) const
+    {
+        switch ((Wave) std::clamp (wave, 0, kNumWaves - 1))
+        {
+            case Wave::triangle:  return triangleWave (ph);
+            case Wave::sawDown:   return sawDownWave (ph);
+            case Wave::sawUp:     return sawUpWave (ph);
+            case Wave::trapezoid: return trapezoidWave (ph);
+            case Wave::stepRandom:
+                return randomFor (ch, floorToInt (2.0 * p));
+            case Wave::smoothRandom:
+            {
+                const int64_t k = floorToInt (2.0 * p);
+                const double before = randomFor (ch, k - 1), now = randomFor (ch, k);
+                return before + (now - before) * fractionOf (2.0 * p);
+            }
+        }
+        return 0.0;
+    }
+
+    // Tetrad Ex: the shape of channel ch, -1..+1. "Off": the amount itself; otherwise the amount times the source,
+    // read as it was one tick earlier (as "mod from"), so the order of the channels never matters.
+    double Engine::shapeValue (int ch, const std::array<double, kNumChannels>& sineBefore, const std::array<double, kNumChannels>& asgnBefore) const
+    {
+        const double amount = std::clamp (settings.shapeAmount[ch], -1.0, 1.0);
+        const int m = std::clamp (settings.shapeFrom[ch], 0, kNumShapeSources - 1);
+        if (m == 0) return amount;
+        if (m == 1) return amount * modWheel;
+        const int other = otherChannel (ch, (m - 2) / 2);
+        return std::clamp (amount * ((m - 2) % 2 == 0 ? sineBefore[(std::size_t) other] : asgnBefore[(std::size_t) other]), -1.0, 1.0);
+    }
+
     void Engine::computeOutputs()
     {
-        const auto wave = (Wave) std::clamp (settings.asgnWave, 0, kNumWaves - 1);
+        const bool ex = settings.exOn;
+        const auto sineBefore = sineOut, asgnBefore = asgnOut;
+        const int64_t tickNow = (int64_t) ticks;
         for (int ch = 0; ch < kNumChannels; ++ch)
         {
-            const double p = pos[(std::size_t) ch];
+            const auto c = (std::size_t) ch;
+            const double p = pos[c];
             const double ph = fractionOf (p);
-            sineOut[(std::size_t) ch] = sineWave (ph);
-            rectOut[(std::size_t) ch] = rectHigh (ph);
-            double a = 0.0;
-            switch (wave)
+            int wave = std::clamp (settings.asgnWave, 0, kNumWaves - 1);
+            if (! ex)
             {
-                case Wave::triangle:  a = triangleWave (ph); break;
-                case Wave::sawDown:   a = sawDownWave (ph); break;
-                case Wave::sawUp:     a = sawUpWave (ph); break;
-                case Wave::trapezoid: a = trapezoidWave (ph); break;
-                case Wave::stepRandom:
-                    a = randomFor (ch, floorToInt (2.0 * p));
-                    break;
-                case Wave::smoothRandom:
-                {
-                    const int64_t k = floorToInt (2.0 * p);
-                    const double before = randomFor (ch, k - 1), now = randomFor (ch, k);
-                    a = before + (now - before) * fractionOf (2.0 * p);
-                    break;
-                }
+                // Exactly as 0.1.0.
+                shapeNow[c] = 0.0;
+                dutyNow[c] = 0.5;
+                waveNow[c] = wave;
+                sineOut[c] = sineWave (ph);
+                rectOut[c] = rectHigh (ph);
+                asgnOut[c] = asgnValue (ch, wave, p, ph);
+                continue;
             }
-            asgnOut[(std::size_t) ch] = a;
+
+            const double shape = shapeValue (ch, sineBefore, asgnBefore);
+            const auto target = (ShapeTarget) std::clamp (settings.shapeTarget[ch], 0, kNumShapeTargets - 1);
+            shapeNow[c] = shape;
+
+            double s = sineWave (ph);
+            if (target == ShapeTarget::fold && shape != 0.0)
+                s = foldWave (s, 1.0 + (kMaxFold - 1.0) * std::fabs (shape));
+            sineOut[c] = s * std::clamp (settings.sineLevel[ch], 0.0, 1.0);
+
+            const int own = std::clamp (settings.exWave[ch], 0, kNumExWaves - 1);
+            if (own > 0) wave = own - 1;
+            if (target == ShapeTarget::wave)
+                wave = ((wave + (int) std::lround (shape * kWaveSteps)) % kNumWaves + kNumWaves) % kNumWaves;
+            waveNow[c] = wave;
+            asgnOut[c] = asgnValue (ch, wave, p, ph) * std::clamp (settings.asgnLevel[ch], 0.0, 1.0);
+
+            if (target == ShapeTarget::width)
+            {
+                const double d = 0.5 + kWidthRange * shape;
+                dutyNow[c] = d;
+                bool high = ph < d;
+                if (high && ! rectOut[c])
+                {
+                    if (tickNow - lastRiseTick[c] < riseGapTicks) high = false;     // too soon after the last rise
+                    else lastRiseTick[c] = tickNow;
+                }
+                rectOut[c] = high;
+            }
+            else
+            {
+                dutyNow[c] = 0.5;
+                rectOut[c] = rectHigh (ph);
+            }
         }
     }
 

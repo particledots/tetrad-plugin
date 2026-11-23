@@ -148,6 +148,7 @@ jobs:
           "$PV" window-pictures > preview.log 2>&1; code=$?
           cat preview.log
           echo "::notice::WINDOW: $(grep -h '^window:' preview.log)"
+          echo "::notice::DRAWING: $(grep -h '^drawing:' preview.log)"
           if [ $code -eq 0 ]; then echo "::notice::PREVIEW: $(grep -h 'preview checks:' preview.log)"; else
             echo "::error::PREVIEW: $(grep -h 'preview checks:' preview.log)"
             grep FAIL preview.log | head -10 | while IFS= read -r line; do echo "::error::PREVIEW: $line"; done
@@ -170,7 +171,7 @@ jobs:
           cp auval.log Tetrad-macOS/auval.log 2>/dev/null || true
           cp pluginval-AU.log pluginval-VST3.log Tetrad-macOS/ 2>/dev/null || true
           cat > Tetrad-macOS/INSTALL.txt <<'TXT'
-          TETRAD 0.1.0: install and set up
+          TETRAD 0.2.0: install and set up
 
           INSTALL (once per Mac)
           1. Unzip.
@@ -217,6 +218,10 @@ jobs:
           - Click an output's light to switch that output off (it stops sending; less MIDI, less CPU).
           - Rect out: CC (127 / 0), Note (a 20 ms note at each rising edge: A 49, B 50, C 51, D 52), or Both.
           - The top rate is 20 Hz (what MIDI CC carries smoothly).
+          - Tetrad Ex (the right-hand panel): switch it on at the top. Per channel: sine and asgn level, the channel's
+            own asgn wave ("main" follows the global one), and a shape knob with "from" (off = the knob alone, or the
+            mod wheel or another channel's sine or asgn) and what it shapes: fold (the sine), wave (switches the asgn
+            wave) or width (the rect). Ex sends no MIDI of its own, so the mapper stays the same (0.1.0).
           TXT
           # Easy installer for Logic (double-click; same file in every plugin)
           cp "tools/mapper/Tetrad-Mapper.js" "Tetrad-macOS/Tetrad Mapper (paste into Scripter).txt"

@@ -1,7 +1,8 @@
 // Offline window picture and plugin checks (not part of the plugin; only built with -DTETRAD_BUILD_PREVIEW=ON).
 //   1. draws the window to picture files (default, the approved example, Waves view, divide, multiply, tempo with no
 //      tempo from the host, outputs switched off, three sizes);
-//   2. checks that all 33 ids exist, each has exactly one control, and each control moves exactly its own parameter;
+//   2. checks that all 58 ids exist (33 from 0.1.0, 25 for Tetrad Ex), each has exactly one control, and each control
+//      moves exactly its own parameter; Tetrad Ex's defaults, menus and dimming; what the window costs to draw;
 //   3. checks saving and reloading: every setting, the random seed, the Lights | Waves choice and the window size;
 //   4. checks the MIDI: everything that comes in passes through untouched, the outputs come out on CC 2-8, 34-40,
 //      66-73, 91-94 on the chosen channel, the mod wheel and notes work, changing the channel and bypassing leave
@@ -118,6 +119,10 @@ namespace
         for (int ch = 1; ch <= 4; ++ch)
             for (auto base : { "slider", "modFrom", "modDepth", "resetFrom", "sineOn", "asgnOn", "rectOn" })
                 ids.add (juce::String (base) + juce::String (ch));
+        ids.add ("exOn");
+        for (int ch = 1; ch <= 4; ++ch)
+            for (auto base : { "sineLevel", "asgnLevel", "exWave", "shapeAmount", "shapeFrom", "shapeTarget" })
+                ids.add (juce::String (base) + juce::String (ch));
         return ids;
     }
 
@@ -141,6 +146,18 @@ namespace
         setParam (p, "resetFrom3", 2.0f);
         setParam (p, "rectOn4", 0.0f);
     }
+
+    // A Tetrad Ex example: A folded by C's sine, B on its own smooth random wave at 60%, C's asgn switching with the
+    // mod wheel, D's rect width from B's asgn.
+    void exExample (TetradProcessor& p)
+    {
+        setParam (p, "exOn", 1.0f);
+        setParam (p, "shapeAmount1", 0.8f);  setParam (p, "shapeFrom1", 4.0f);  setParam (p, "shapeTarget1", 0.0f);
+        setParam (p, "exWave2", 6.0f);       setParam (p, "asgnLevel2", 0.6f);
+        setParam (p, "shapeAmount3", 0.6f);  setParam (p, "shapeFrom3", 1.0f);  setParam (p, "shapeTarget3", 1.0f);
+        setParam (p, "shapeAmount4", -0.7f); setParam (p, "shapeFrom4", 5.0f);  setParam (p, "shapeTarget4", 2.0f);
+        setParam (p, "sineLevel4", 0.4f);
+    }
 }
 
 int main (int argc, char** argv)
@@ -154,7 +171,7 @@ int main (int argc, char** argv)
     {
         TetradProcessor proc;
         proc.prepareToPlay (48000.0, 512);
-        expect (proc.getParameters().size() == 33 && ids.size() == 33, "33 parameters");
+        expect (proc.getParameters().size() == 58 && ids.size() == 58 && TetradParams::kNumParameters == 58, "58 parameters (33 + 25 for Tetrad Ex)");
         for (auto& id : ids)
             expect (param (proc, id) != nullptr, "parameter id " + id);
         expect (proc.isMidiEffect() && proc.acceptsMidi() && proc.producesMidi(), "a MIDI effect");
@@ -172,6 +189,19 @@ int main (int argc, char** argv)
             for (auto base : { "sineOn", "asgnOn", "rectOn" }) switchesOn = switchesOn && param (proc, juce::String (base) + juce::String (ch))->getValue() > 0.5f;
         }
         expect (menusOff && switchesOn, "mod from and reset from start on Off, depth 0%, every output on");
+        bool exDefaults = param (proc, "exOn")->getValue() < 0.5f;
+        for (int ch = 1; ch <= 4; ++ch)
+        {
+            const auto c = juce::String (ch);
+            exDefaults = exDefaults && param (proc, "sineLevel" + c)->getCurrentValueAsText() == "100%" && param (proc, "asgnLevel" + c)->getCurrentValueAsText() == "100%"
+                         && param (proc, "exWave" + c)->getCurrentValueAsText() == "Main" && param (proc, "shapeAmount" + c)->getCurrentValueAsText() == "0%"
+                         && param (proc, "shapeFrom" + c)->getCurrentValueAsText() == "Off" && param (proc, "shapeTarget" + c)->getCurrentValueAsText() == "Fold";
+        }
+        expect (exDefaults, "Tetrad Ex starts off, levels 100%, wave Main, shape 0% from Off, target Fold");
+        expect (TetradParams::exWaveNames.joinIntoString (",") == "Main,Triangle,Saw down,Saw up,Trapezoid,Step random,Smooth random"
+                && TetradParams::shapeTargetNames.joinIntoString (",") == "Fold,Wave,Width"
+                && dynamic_cast<juce::AudioParameterChoice*> (param (proc, "shapeFrom2"))->choices.joinIntoString (",") == TetradParams::modFromNames (1).joinIntoString (","),
+                "Ex menus in their fixed order (wave: Main then the six; target: Fold, Wave, Width; shape from as mod from)");
         expect (TetradParams::modFromNames (0).joinIntoString (",") == "Off,Mod wheel,B sine,B asgn,C sine,C asgn,D sine,D asgn"
                 && TetradParams::modFromNames (2).joinIntoString (",") == "Off,Mod wheel,A sine,A asgn,B sine,B asgn,D sine,D asgn"
                 && TetradParams::resetFromNames (3).joinIntoString (",") == "Off,Notes,A rect,B rect,C rect",
@@ -189,7 +219,7 @@ int main (int argc, char** argv)
         auto controls = ed->controls();
         std::set<juce::String> seen;
         for (auto& c : controls) seen.insert (c.paramId);
-        expect (controls.size() == 33 && seen.size() == 33, "every parameter has exactly one control");
+        expect (controls.size() == 58 && seen.size() == 58, "every parameter has exactly one control");
         for (auto& c : controls)
         {
             auto before = snapshot (proc);
@@ -222,7 +252,15 @@ int main (int argc, char** argv)
         // Menu text as drawn.
         std::vector<juce::ComboBox*> boxes;
         for (auto& c : ed->controls()) if (auto* b = dynamic_cast<juce::ComboBox*> (c.control)) boxes.push_back (b);
-        expect (boxes.size() == 9 && boxes[0]->getText() == "channel 12" && boxes[1]->getText() == "Off", "menus read 'channel 12' and 'Off'");
+        expect (boxes.size() == 17 && boxes[0]->getText() == "channel 12" && boxes[1]->getText() == "Off", "menus read 'channel 12' and 'Off'");
+        expect (boxes[9]->getText() == "wave: main" && boxes[10]->getText() == "from: off" && boxes[16]->getText() == "from: off",
+                "Ex menus read 'wave: main' and 'from: off' (" + boxes[9]->getText() + ", " + boxes[10]->getText() + ")");
+        expect (ed->panel.exControlsDimmed(), "Ex off: its controls are dimmed");
+        setParam (proc, "exOn", 1.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (30);
+        expect (! ed->panel.exControlsDimmed(), "Ex on: its controls are lit");
+        setParam (proc, "exOn", 0.0f);
+        juce::MessageManager::getInstance()->runDispatchLoopUntil (30);
 
         approvedExample (proc);
         pump (proc, 3.0);
@@ -258,6 +296,16 @@ int main (int argc, char** argv)
         snapshotTo (*ed, outDir.getChildFile ("tetrad-window-outputs-off.png"));
         for (auto* x : proc.getParameters()) x->setValueNotifyingHost (x->getDefaultValue());
 
+        exExample (proc);
+        pump (proc, 2.0);
+        snapshotTo (*ed, outDir.getChildFile ("tetrad-window-ex.png"));
+        expect (std::fabs (proc.view[0].shape.load()) > 0.0f && std::fabs (proc.view[3].shape.load()) > 0.0f, "Ex on: the panel gets each channel's shape for its light");
+        ed->panel.viewChoices.choose (1);
+        pump (proc, 3.0);
+        snapshotTo (*ed, outDir.getChildFile ("tetrad-window-ex-waves.png"));
+        ed->panel.viewChoices.choose (0);
+        for (auto* x : proc.getParameters()) x->setValueNotifyingHost (x->getDefaultValue());
+
         // Lights | Waves: starts on Lights, switches, saves, moves no parameter.
         expect (! ed->isWavesView() && ed->panel.viewChoices.getSelected() == 0, "window starts in Lights view");
         approvedExample (proc);
@@ -287,6 +335,65 @@ int main (int argc, char** argv)
                   << juce::String (100.0 * slowShare, 1) << "% with all four at 0.01 Hz" << std::endl;
         expect (share > 0.002 && share < 0.20, "at the defaults the window draws only what moved (" + juce::String (100.0 * share, 1) + "% of the panel per frame)");
         expect (slowShare < share, "slow LFOs: even less is drawn again (" + juce::String (100.0 * slowShare, 1) + "%)");
+
+        // What drawing the window costs: 90 frames at the defaults with Ex on, painted the 0.2.0 way (the still parts
+        // copied from their picture, only the lights in the redrawn areas) and the 0.1.0 way (everything drawn again in
+        // those areas), into a picture at 1x and 2x (on a Mac, with the same CoreGraphics drawing Logic's window uses).
+        {
+            for (auto* x : proc.getParameters()) x->setValueNotifyingHost (x->getDefaultValue());
+            setParam (proc, "exOn", 1.0f); setParam (proc, "shapeAmount1", 0.5f); setParam (proc, "shapeFrom1", 2.0f);
+            pump (proc, 0.5);
+            auto& layer = ed->panel.lightsLayer();
+            int stillPartsRedrawn = 0;                    // how often the picture of the still parts was drawn again after a run's first frame
+            auto cost = [&] (bool oldWay, float scale)
+            {
+                LightsLayer::drawLikeVersion010 = oldWay;
+                ed->panel.setBackgroundCached (! oldWay);
+                juce::Image img (juce::Image::ARGB, juce::roundToInt (920 * scale), juce::roundToInt (560 * scale), true);
+                double ms = 0.0;
+                int bgAtFirst = 0;
+                for (int f = 0; f < 130; ++f)
+                {
+                    if (f == 1) bgAtFirst = ed->panel.panelBackground().timesDrawn;
+                    runBlocks (proc, 1.0 / 30.0, 480);
+                    layer.update();
+                    auto areas = layer.lastFrameAreas;
+                    if (oldWay)                                   // 0.1.0's areas: the big lights reached the sliders, the outputs their labels
+                        for (int ch = 0; ch < 4; ++ch)
+                        {
+                            if (areas.intersectsRectangle (LightsLayer::lightArea (ch))) areas.add (LightsLayer::lightArea (ch).withTop (92).withHeight (58));
+                            for (int w = 0; w < 3; ++w)
+                                if (areas.intersectsRectangle (LightsLayer::outArea (ch, w))) areas.add (LightsLayer::outArea (ch, w).withSizeKeepingCentre (30, 30).withHeight (44));
+                        }
+                    if (areas.isEmpty()) continue;
+                    const double t0 = juce::Time::getMillisecondCounterHiRes();
+                    {
+                        juce::Graphics g (img);
+                        g.addTransform (juce::AffineTransform::scale (scale));
+                        g.reduceClipRegion (areas);
+                        ed->panel.paintEntireComponent (g, false);
+                    }
+                    if (f >= 10) ms += juce::Time::getMillisecondCounterHiRes() - t0;     // the first 10 frames warm up
+                }
+                if (! oldWay) stillPartsRedrawn = ed->panel.panelBackground().timesDrawn - bgAtFirst;
+                LightsLayer::drawLikeVersion010 = false;
+                ed->panel.setBackgroundCached (true);
+                return ms / 120.0 * 30.0;                                                // milliseconds of drawing per second
+            };
+            // Each measured three times, taking the quickest (the checking computer is shared, so slower runs are noise).
+            double old1 = 1e9, new1 = 1e9, old2 = 1e9, new2 = 1e9;
+            for (int rep = 0; rep < 3; ++rep)
+            {
+                old1 = juce::jmin (old1, cost (true, 1.0f)); new1 = juce::jmin (new1, cost (false, 1.0f));
+                old2 = juce::jmin (old2, cost (true, 2.0f)); new2 = juce::jmin (new2, cost (false, 2.0f));
+            }
+            std::cout << "drawing: " << juce::String (new1, 1) << " ms a second at 1x and " << juce::String (new2, 1) << " at 2x (the 0.1.0 way: "
+                      << juce::String (old1, 1) << " and " << juce::String (old2, 1) << "), " << juce::roundToInt (100.0 * (1.0 - new1 / old1)) << "% and "
+                      << juce::roundToInt (100.0 * (1.0 - new2 / old2)) << "% less" << std::endl;
+            expect (new1 < 0.6 * old1 && new2 < 0.6 * old2, "the window costs less than 60% of the 0.1.0 way to draw, at 1x and 2x");
+            expect (stillPartsRedrawn == 0 && new1 > 0.0, "the still parts are drawn once, not again while the lights move");
+            for (auto* x : proc.getParameters()) x->setValueNotifyingHost (x->getDefaultValue());
+        }
 
         bool rising = true;
         for (int k = 1; k <= 100; ++k) rising = rising && TetradStyle::lightAlpha (k / 100.0) >= TetradStyle::lightAlpha ((k - 1) / 100.0);
@@ -340,6 +447,7 @@ int main (int argc, char** argv)
         approvedExample (a);
         setParam (a, "asgnWave", 4.0f); setParam (a, "rectOut", 2.0f); setParam (a, "tempoFollow", 1.0f); setParam (a, "outChannel", 5.0f);
         setParam (a, "slider3", 0.11f); setParam (a, "asgnOn2", 0.0f);
+        exExample (a); setParam (a, "exWave4", 3.0f); setParam (a, "asgnLevel1", 0.15f);
         juce::MemoryBlock mb; a.getStateInformation (mb);
         TetradProcessor b; b.prepareToPlay (48000.0, 512);
         expect (b.randomSeed() != a.randomSeed(), "two new copies of the plugin get different random seeds");
@@ -352,6 +460,29 @@ int main (int argc, char** argv)
         a2.prepareToPlay (48000.0, 512); b.prepareToPlay (48000.0, 512);
         auto ra = runBlocks (a2, 3.0, 512), rb = runBlocks (b, 3.0, 512);
         expect (sameStream (ra, rb) && ! ra.empty(), "two copies opened from the same project move exactly alike (zero phase, same seed)");
+
+        // A 0.1.0 project (no Ex settings in it) opens with Ex off and at its defaults.
+        {
+            TetradProcessor old; setParam (old, "mode", 2.0f); setParam (old, "slider2", 0.7f);
+            auto oldXml = old.getValueTreeState().copyState().createXml();
+            for (auto id : { "exOn", "sineLevel", "asgnLevel", "exWave", "shapeAmount", "shapeFrom", "shapeTarget" })
+                for (int ch = 0; ch <= 4; ++ch)
+                {
+                    const juce::String full = juce::String (id) + (juce::String (id) == "exOn" ? juce::String() : juce::String (ch));
+                    for (auto* e = oldXml->getFirstChildElement(); e != nullptr; e = e->getNextElement())
+                        if (e->getStringAttribute ("id") == full) { oldXml->removeChildElement (e, true); break; }
+                }
+            int left = 0;
+            for (auto* e = oldXml->getFirstChildElement(); e != nullptr; e = e->getNextElement()) ++left;
+            juce::MemoryBlock oldBlock; juce::AudioProcessor::copyXmlToBinary (*oldXml, oldBlock);
+            TetradProcessor opened; setParam (opened, "exOn", 1.0f); setParam (opened, "sineLevel2", 0.3f);   // as if changed before loading
+            opened.setStateInformation (oldBlock.getData(), (int) oldBlock.getSize());
+            TetradProcessor fresh; fresh.setStateInformation (oldBlock.getData(), (int) oldBlock.getSize());
+            const auto snap = snapshot (fresh);
+            expect (left == 33 && snap.at ("exOn") < 0.5f && snap.at ("sineLevel2") > 0.99f && std::fabs (param (fresh, "mode")->convertFrom0to1 (snap.at ("mode")) - 2.0f) < 0.01f,
+                    "a 0.1.0 project (33 settings, no Ex) opens with its settings, Ex off and at its defaults");
+            (void) opened;
+        }
 
         // A project with no seed saved (or a broken one) opens with its settings and a seed of its own.
         auto xml = a.getValueTreeState().copyState().createXml();
@@ -457,6 +588,21 @@ int main (int argc, char** argv)
         expect (std::fabs (r.view[0].sine.load() - s.view[0].sine.load()) > 1e-3, "a note restarts a channel set to reset from Notes");
         expect (r.view[1].hz.load() > s.view[1].hz.load() * 20.0f, "the mod wheel speeds up a channel set to mod from Mod wheel");
 
+        // Tetrad Ex through the plugin: A's sine at 0% sends only the middle value; Ex off again, it moves again.
+        TetradProcessor x; x.prepareToPlay (48000.0, 512);
+        setParam (x, "slider1", 0.8f);
+        setParam (x, "exOn", 1.0f); setParam (x, "sineLevel1", 0.0f);
+        runBlocks (x, 0.2, 512);
+        auto quiet = runBlocks (x, 1.0, 512);
+        int aSine = 0; bool middle = true;
+        for (auto& e : quiet) if (e.m.isController() && e.m.getControllerNumber() == 34) { ++aSine; middle = middle && e.m.getControllerValue() == 0; }
+        for (auto& e : quiet) if (e.m.isController() && e.m.getControllerNumber() == 2) middle = middle && e.m.getControllerValue() == 64;
+        setParam (x, "exOn", 0.0f);
+        auto moving = runBlocks (x, 1.0, 512);
+        int aSineAfter = 0;
+        for (auto& e : moving) if (e.m.isController() && e.m.getControllerNumber() == 34) ++aSineAfter;
+        expect (middle && aSine <= 12 && aSineAfter > 100, "Ex: A's sine at 0% sends only the middle value (" + juce::String (aSine) + " messages in 1 s); Ex off, it moves again");
+
         // Following Logic's tempo while it plays: A on 1/4 at 100 BPM runs at 1.67 Hz, lined up with the song.
         TetradProcessor t; t.prepareToPlay (48000.0, 512);
         FakePlayHead head; head.bpm = 100.0; head.playing = true; head.ppq = 16.0;
@@ -482,6 +628,7 @@ int main (int argc, char** argv)
             }
             p.setStateInformation (fixedSeed.getData(), (int) fixedSeed.getSize());
             approvedExample (p);
+            exExample (p);
             setParam (p, "asgnWave", 5.0f); setParam (p, "rectOut", 2.0f);
             return runBlocks (p, 5.0, block, { { 12345, juce::MidiMessage::noteOn (1, 50, (juce::uint8) 90) }, { 99999, juce::MidiMessage::controllerEvent (1, 1, 64) } });
         };
